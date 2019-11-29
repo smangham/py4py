@@ -1,27 +1,33 @@
+"""
+Reverberation Mapping module
+
+This contains the type used to create and manipulate reverberation maps from Python output files.
+"""
 # -*- coding: utf-8 -*-
+# pylint: disable=C0301
 import numpy as np
-import astropy as ap
-import astropy.constants as apc
+import astropy.constants as apc  # pylint: disable=E1101
 import time
 import sys
 import matplotlib.pyplot as plt
 import sqlalchemy
 import sqlalchemy.ext.declarative
+import sqlalchemy.exc
 import sqlalchemy.orm
 import sqlalchemy.orm.query
 import matplotlib
 from astropy import units as u
-from typing import List, Optional
+from typing import List, Optional, Union, Tuple
 
 # Constant used for rescaling data.
 # Probably already exists in apc but I don't want to faff around with units
-seconds_per_day = 60*60*24
+SECONDS_PER_DAY = 60 * 60 * 24
 
 
 # ==============================================================================
 # MATHS FUNCTIONS
 # ==============================================================================
-def calculate_FWHM(X, Y):
+def calculate_fwhm(midpoints: np.ndarray, vals: np.ndarray) -> float:
     """
     Calculate FWHM from arrays
 
@@ -30,34 +36,35 @@ def calculate_FWHM(X, Y):
     peak within it. Doublets will calculate FWHM from the HM of both!
 
     Args:
-        X (numpy array):    Array of bin midpoints
-        Y (numpy array):    Array of bin values
+        midpoints (np.ndarray): Array of bin midpoints
+        vals (np.ndarray): Array of bin values
 
     Returns:
-        float:              FWHM of the peak (should it exist!)
+        float: FWHM of the peak (should it exist!)
     """
     # Create 'difference' array by subtracting half maximum
-    d = Y - (np.amax(Y) / 2)
+    difference = vals - (np.amax(vals) / 2)
     # Find the points where the difference is positive
-    indexes = np.where(d > 0)[0]
+    indexes = np.where(difference > 0)[0]
     # The first and last positive points are the edges of the peak
-    return abs(X[indexes[-1]] - X[indexes[0]])
+    return abs(midpoints[indexes[-1]] - midpoints[indexes[0]])
 
 
-def calculate_centroid(bins, vals, bounds=None):
+def calculate_centroid(
+    bins: np.ndarray, vals: np.ndarray, bounds: float = None
+) -> Union[float, Tuple[float, float, float]]:
     """
     Returns the centroid position, with optional percentile bounds.
 
     Args:
-        bins (numpy array): Array of bin bounds
-        vals (numpy array): Array of bin values
-        bounds (float):     Fraction from 0-0.5. Percentile either side of the
-                            centroid to find (e.g. .2 -> 30%, 70%)
+        bins (np.ndarray): Array of bin bounds
+        vals (np.ndarray): Array of bin values
+        bounds (float):    Fraction from 0-0.5. Percentile either side of the
+                           centroid to find (e.g. .2 -> 30%, 70%)
 
     Returns:
-        float:              Flux-weighted centroid
-        float (optional):   Lower percentile centroid, if 'bounds' passed
-        float (optional):   Upper percentile centroid, if 'bounds' passed
+        Union[float, Tuple(float, float, float)]:
+            Flux-weighted centroid, and if 'bounds' passed both lower and upper percentile bounds
     """
     centroid_total = np.sum(vals)
     centroid_position = np.sum(np.multiply(bins, vals))/centroid_total
@@ -98,26 +105,26 @@ def calculate_centroid(bins, vals, bounds=None):
         return centroid_position
 
 
-def calculate_midpoints(X):
+def calculate_midpoints(bins: np.ndarray) -> np.ndarray:
     """
     Converts bin boundaries into midpoints
 
     Args:
-        X (numpy array):    Array of bin boundaries
+        bins (np.ndarray):    Array of bin boundaries
 
     Returns:
-        numpy array:        Array of bin midpoints (1 shorter!)
+        np.ndarray:        Array of bin midpoints (1 shorter!)
     """
-    X_midp = np.zeros(shape=len(X)-1)
-    for i in range(0, len(X)-1):
-        X_midp[i] = (X[i] + X[i+1]) / 2
-    return X_midp
+    midpoints = np.zeros(shape=len(bins)-1)
+    for i in range(0, len(bins)-1):
+        midpoints[i] = (bins[i] + bins[i+1]) / 2
+    return midpoints
 
 
 # ==============================================================================
 # PHYSICS FUNCTIONS
 # ==============================================================================
-def calculate_delay(angle, phase, radius, days=True):
+def calculate_delay(angle: float, phase: float, radius: float, days: bool = True) -> float:
     """
     Delay relative to continuum for emission from a point on the disk.
 
@@ -138,46 +145,48 @@ def calculate_delay(angle, phase, radius, days=True):
     Returns:
         float:          Delay relative to continuum
     """
-    vr_disk   = np.array([radius*np.cos(phase), 0.0])
+    vr_disk = np.array([radius*np.cos(phase), 0.0])
     vr_normal = np.array([np.sin(angle), np.cos(angle)])
-    vr_plane  = radius * vr_normal
+    vr_plane = radius * vr_normal
+    delay = np.dot((vr_plane - vr_disk), vr_normal) / apc.c.value
+
     if days:
-        return (np.dot((vr_plane - vr_disk), vr_normal) / apc.c.value) / seconds_per_day
+        return delay / SECONDS_PER_DAY
     else:
-        return (np.dot((vr_plane - vr_disk), vr_normal) / apc.c.value)
+        return delay
 
 
-def keplerian_velocity(mass, radius):
+def keplerian_velocity(mass: float, radius: float) -> float:
     """
     Calculates Keplerian velocity at given radius
 
     Args:
-        mass (float):   Object mass in kg
+        mass (float): Object mass in kg
         radius (float): Orbital radius in m
 
     Returns:
-        float:          Orbital velocity in m/s
+        float: Orbital velocity in m/s
     """
-    return np.sqrt(ap.constants.G.value * mass / radius)
+    return np.sqrt(apc.G.value * mass / radius)
 
 
-def doppler_shift_wave(line, vel):
+def doppler_shift_wave(line: float, vel: float) -> float:
     """
-    Converts passed line and velocity into red/blueshifted wavelength
+    Converts passed line and velocity into red/blue-shifted wavelength
 
     Args:
-        line (float):   Line wavelength (any length unit)
-        vel (float):    Doppler shift velocity (m/s)
+        line (float): Line wavelength (any length unit)
+        vel (float): Doppler shift velocity (m/s)
 
     Returns:
-        float:          Doppler shifted line wavelength (as above)
+        float: Doppler shifted line wavelength (as above)
     """
     return line * apc.c.value / (apc.c.value - vel)
 
 
-def doppler_shift_vel(line, wave):
+def doppler_shift_vel(line: float, wave: float) -> float:
     """
-    Converts passed red/blueshifted wave into velocity
+    Converts passed red/blue-shifted wave into velocity
 
     Args:
         line (float):   Base line wavelength (any length unit)
@@ -199,22 +208,22 @@ class TransferFunction:
     """
     Used to create, store and query emissivity and response functions
     """
-    def __getstate__(self):
+    def __getstate__(self) -> dict:
         """
-        Removes invalid data before saving to disk
+        Removes invalid data before saving to disk.
 
         Returns:
             dict: Updated internal dict, with references to external,
                   session-specific database things, removed.
         """
-        state = self.__dict__.copy()
+        state: dict = self.__dict__.copy()
         # Remove the unpicklable entries.
         del state['_session']
         del state['_query']
         del state['_database']
         return state
 
-    def __setstate__(self, state):
+    def __setstate__(self, state: dict):
         """
         Restores the data from disk, and sets a flag to show this is a frozen TF.
 
@@ -224,8 +233,12 @@ class TransferFunction:
         self.__dict__.update(state)
         self._unpickled = True
 
-    def __init__(self, database, filename, continuum, wave_bins=None, delay_bins=None, template=None,
-                 template_different_line=False, template_different_spectrum=False):
+    def __init__(
+                    self, database: sqlalchemy.engine.Connection, filename: str,
+                    continuum: float, wave_bins: int = None, delay_bins: int = None,
+                    template: 'TransferFunction' = None,
+                    template_different_line: bool = False, template_different_spectrum: bool = False
+            ):
         """
         Initialises the TF, optionally by templating off another TF.
 
@@ -238,7 +251,7 @@ class TransferFunction:
         thhat the template was of a different line.
 
         Args:
-            database (sqlalchemy connection):
+            database (sqlalchemy.engine.Connection):
                                 The database to be queried for this TF
             filename (string):  The root filename for plots created for this TF
             continuum (float):  The continuum value associated with this TF
@@ -253,18 +266,14 @@ class TransferFunction:
             template_different_spectrum (bool):
                                 Is this TF going to share all specified bins but
                                 be taken on photons from a different observer
-
-        Returns:
-            TransferFunction:   The created TF
-
         """
         assert (delay_bins is not None and wave_bins is not None) or template is not None,\
             "Must provide either resolutions or another TF to copy them from!"
         # self._query = database.query(Photon.Wavelength, Photon.Delay, Photon.Weight, Photon.X, Photon.Z)
 
         self._database = database
-        Session = sqlalchemy.orm.sessionmaker(bind=self._database)
-        self._session = Session()
+        session_maker = sqlalchemy.orm.sessionmaker(bind=self._database)
+        self._session = session_maker()
         self._query = self._session.query(Photon.Wavelength, Photon.Delay, Photon.Weight)
 
         self._delay_dynamic_range = None
@@ -314,31 +323,34 @@ class TransferFunction:
                 # If we want the same bins for the same spectrum, record so
                 self.spectrum(template._spectrum)
 
-    def spectrum(self, number):
+    def spectrum(self, number: int) -> 'TransferFunction':
         """
         Constrain the TF to photons from a specific observer
 
         Args:
-            number (int):       Observer number from Python run
+            number (int): Observer number from Python run
+
         Returns:
-            TransferFunction:   Self, so filters can be stacked
+            TransferFunction: Self, so filters can be stacked
         """
         assert self._unpickled is False,\
             "TF restored from pickle! It cannot be rerun, filters cannot be applied."
         self._spectrum = number
         self._query = self._query.filter(Photon.Spectrum == number)
         return self
-    def line(self, number, wavelength):
+
+    def line(self, number: int, wavelength: float) -> 'TransferFunction':
         """
         Constrain the TF to only photons last interacting with a given line
 
         This includes being emitted in the specified line, or scattered off it
 
         Args:
-            number (int):       Python line number. Will vary based on data file!
+            number (int): Python line number. Will vary based on data file!
             wavelength (float): Wavelength of the line in angstroms
+
         Returns:
-            TransferFunction:   Self, so filters can be stacked
+            TransferFunction: Self, so filters can be stacked
         """
         assert self._unpickled is False,\
             "TF restored from pickle! It cannot be rerun, filters cannot be applied."
@@ -346,15 +358,17 @@ class TransferFunction:
         self._line_num = number
         self._query = self._query.filter(Photon.Resonance == number)
         return self
-    def velocities(self, velocity):
+
+    def velocities(self, velocity: float) -> 'TransferFunction':
         """
         Constrain the TF to only photons with a range of Doppler shifts
 
         Args:
-            velocity (float):   Maximum doppler shift velocity in m/s. Applies
-                                to both positive and negative Doppler shift
+            velocity (float): Maximum doppler shift velocity in m/s. Applies
+                              to both positive and negative Doppler shift
+
         Returns:
-            TransferFunction:   Self, so filters can be stacked
+            TransferFunction: Self, so filters can be stacked
         """
         assert self._unpickled is False,\
             "TF restored from pickle! It cannot be rerun, filters cannot be applied."
@@ -362,17 +376,19 @@ class TransferFunction:
             "Cannot limit doppler shift around a line without specifying a line!"
         self._velocity = velocity
         self._query = self._query.filter(Photon.Wavelength >= doppler_shift_wave(self._line_wave, -velocity),
-                                         Photon.Wavelength <= doppler_shift_wave(self._line_wave,  velocity))
+                                         Photon.Wavelength <= doppler_shift_wave(self._line_wave, velocity))
         return self
-    def wavelengths(self, wave_min, wave_max):
+
+    def wavelengths(self, wave_min: float, wave_max: float) -> 'TransferFunction':
         """
         Constrain the TF to only photons with a range of wavelengths
 
         Args:
-            wave_min (float):   Minimum wavelength in angstroms
-            wave_max (float):   Maximum wavelength in angstroms
+            wave_min (float): Minimum wavelength in angstroms
+            wave_max (float): Maximum wavelength in angstroms
+
         Returns:
-            TransferFunction:   Self, so filters can be stacked
+            TransferFunction: Self, so filters can be stacked
         """
         assert self._unpickled is False,\
             "TF restored from pickle! It cannot be rerun, filters cannot be applied."
@@ -381,14 +397,16 @@ class TransferFunction:
         self._wave_range = [wave_min, wave_max]
         self._query = self._query.filter(Photon.Wavelength >= wave_min, Photon.Wavelength <= wave_max)
         return self
-    def wavelength_bins(self, wave_range):
+
+    def wavelength_bins(self, wave_range: np.ndarray) -> 'TransferFunction':
         """
         Constrain the TF to only photons with a range of wavelengths, and to a specific set of bins
 
         Args:
-            wave_range (numpy array):   Array of bins to use
+            wave_range (np.ndarray): Array of bins to use
+
         Returns:
-            TransferFunction:   Self, so filters can be stacked
+            TransferFunction: Self, so filters can be stacked
         """
         assert self._unpickled is False,\
             "TF restored from pickle! It cannot be rerun, filters cannot be applied."
@@ -399,7 +417,17 @@ class TransferFunction:
         self.wavelengths(self._bins_wave[0], self._bins_wave[-1])
         return self
 
-    def lines(self, line_list):
+    def lines(self, line_list: List[int]) -> 'TransferFunction':
+        """
+        Constrain the TF to only photons with a specific internal line number.
+        This list number will be specific to the python atomic data file!
+
+        Args:
+            line_list (List[int]): List of lines
+
+        Returns:
+            TransferFunction: Self, so filters can be stacked
+        """
         assert self._unpickled is False,\
             "TF restored from pickle! It cannot be rerun, filters cannot be applied."
         assert len(line_list) > 1,\
@@ -407,19 +435,46 @@ class TransferFunction:
         self._line_list = line_list
         self._query = self._query.filter(Photon.Resonance.in_(line_list))
         return self
-    def delays(self, delay_min, delay_max, days=True):
+
+    def delays(self, delay_min: float, delay_max: float, days: bool = True) -> 'TransferFunction':
+        """
+        The delay range that should be considered when producing the TF.
+
+        Args:
+            delay_min (float): Minimum delay time (in seconds or days)
+            delay_max (float): Maximum delay time (in seconds or days)
+            days (bool): Whether or not the delay range has been provided in days
+
+        Returns:
+            TransferFunction: Self, so filters can be stacked
+        """
         assert self._unpickled is False,\
             "TF restored from pickle! It cannot be rerun, filters cannot be applied."
         assert delay_min < delay_max,\
             "Minimum delay must be below maximum delay!"
 
         if days:
-            self._delay_range = [delay_min * seconds_per_day, delay_max * seconds_per_day]
+            self._delay_range = [delay_min * SECONDS_PER_DAY, delay_max * SECONDS_PER_DAY]
         else:
             self._delay_range = [delay_min, delay_max]
         self._query = self._query.filter(Photon.Delay > self._delay_range[0], Photon.Delay < self._delay_range[1])
         return self
-    def delay_dynamic_range(self, delay_dynamic_range):
+
+    def delay_dynamic_range(self, delay_dynamic_range: float) -> 'TransferFunction':
+        """
+        If set, the TF will generate delay bins to cover this dynamic range of responses,
+        i.e. (1 - 10^-ddr) of the delays.
+        So a ddr of 1 will generate photons with delays up to 1 - (1/10) = the 90th percentile
+        of delays. ddr=2 will give up to the 99th percentile, 3=99.9th percentile, etc.
+
+        Arguably this is a bit of an ambiguous name
+
+        Args:
+            delay_dynamic_range (float): The dynamic range to be used when
+
+        Returns:
+            TransferFunction: Self, so filters can be stacked
+        """
         assert self._unpickled is False,\
             "TF restored from pickle! It cannot be rerun, filters cannot be applied."
         assert delay_dynamic_range > 0,\
@@ -427,7 +482,18 @@ class TransferFunction:
         self._delay_dynamic_range = delay_dynamic_range
         return self
 
-    def cont_scatters(self, scat_min, scat_max=None):
+    def cont_scatters(self, scat_min: int, scat_max: Optional[int] = None) -> 'TransferFunction':
+        """
+        Constrain the TF to only photons that have scattered min-max times via a
+        continuum scattering process (e.g. electron scattering).
+
+        Args:
+            scat_min (int): Minimum number of continuum scatters
+            scat_max (Optional[int]): Maximum number of continuum scatters, if desired
+
+        Returns:
+            TransferFunction: Self, so filters can be stacked
+        """
         assert self._unpickled is False,\
             "TF restored from pickle! It cannot be rerun, filters cannot be applied."
         if scat_max is not None:
@@ -441,7 +507,19 @@ class TransferFunction:
         else:
             self._query = self._query.filter(Photon.ContinuumScatters == scat_min)
         return self
-    def res_scatters(self, scat_min, scat_max=None):
+
+    def res_scatters(self, scat_min: int, scat_max: Optional[int] = None) -> 'TransferFunction':
+        """
+        Constrain the TF to only photons that have scattered min-max times via a
+        resonant scattering process (e.g. line scattering).
+
+        Args:
+            scat_min (int): Minimum number of resonant scatters
+            scat_max (Optional[int]): Maximum number of resonant scatters, if desired
+
+        Returns:
+            TransferFunction: Self, so filters can be stacked
+        """
         assert self._unpickled is False,\
             "TF restored from pickle! It cannot be rerun, filters cannot be applied."
         if scat_max is not None:
@@ -457,21 +535,52 @@ class TransferFunction:
         return self
 
     def filter(self, *args):
+        """
+        Apply a SQLalchemy filter directly to the content.
+
+        Args:
+            *args: The list of filter arguments
+
+        Returns:
+            TransferFunction: Self, so filters can be stacked
+        """
         assert self._unpickled is False,\
             "TF restored from pickle! It cannot be rerun, filters cannot be applied."
         self._query = self._query.filter(args)
         return self
 
-    def response_map_by_tf(self, low_state, high_state, cf_min=1, cf_max=1):
-        """Creates a response map from two other transfer functions, to be applied during plotting"""
-        # The other two TFs ***must*** have identical bins and both provide ionising luminosity information
+    def response_map_by_tf(
+        self, low_state: 'TransferFunction', high_state: 'TransferFunction',
+        cf_low: float = 1.0, cf_high: float = 1.0
+    ) -> 'TransferFunction':
+        """
+        Creates a response function for this transfer function by subtracting two transfer functions bracketing it.
+        Requires two other completed transfer functions, bracketing this one in luminosity,
+        all with matching wavelength/velocity and delay bins.
+
+        Correction factors are there to account for things like runs that have been terminated early,
+        e.g. if you request 100 spectrum cycles and stop (or Python dies) after 80,
+        the total photon luminosity will only be 80/100. A correction factor allows you to bump this up.
+        Arguably correction factors should be applied during the 'run()' method.
+
+        Args:
+            low_state (TransferFunction): A full, processed transfer function for a lower-luminosity system.
+            high_state (TransferFunction): A full, processed transfer function for a higher-luminosity system.
+            cf_low (float): Correction factor for low state. Multiplier to the whole transfer function.
+            cf_high (float): Correction factor for high state. Multiplier to the whole transfer function.
+
+        Returns:
+            TransferFunction: Self, so plotting can be chained on.
+        """
         assert self._emissivity is not None,\
             "You must run the TF query with '.run()' before response mapping it!"
         assert low_state._emissivity is not None and high_state._emissivity is not None,\
             "You must run the low and high state TF queries with '.run()' before response mapping using them!"
-        assert np.array_equal(self._bins_wave, low_state._bins_wave) and np.array_equal(self._bins_delay, low_state._bins_delay),\
+        assert np.array_equal(self._bins_wave, low_state._bins_wave) \
+            and np.array_equal(self._bins_delay, low_state._bins_delay),\
             "Low state TF is binned differently to target TF! Cannot rescale using it."
-        assert np.array_equal(self._bins_wave, high_state._bins_wave) and np.array_equal(self._bins_delay, high_state._bins_delay),\
+        assert np.array_equal(self._bins_wave, high_state._bins_wave) \
+            and np.array_equal(self._bins_delay, high_state._bins_delay),\
             "High state TF is binned differently to target TF! Cannot rescale using it."
         assert self._continuum is not None,\
             "TF missing continuum luminosity information!"
@@ -487,12 +596,26 @@ class TransferFunction:
         continuum_difference = high_state._continuum - low_state._continuum
 
         # We divide the difference in TFs by the luminosity difference
-        self._response = ((high_state._emissivity*high_state._continuum*cf_max) - (low_state._emissivity*low_state._continuum*cf_min)) / continuum_difference
+        self._response = ((high_state._emissivity*high_state._continuum*cf_high) -
+                          (low_state._emissivity*low_state._continuum*cf_low)) / continuum_difference
         return self
 
+    def fwhm(self, response: bool = False, velocity: bool = True):
+        """
+        Calculates the full width half maximum of the delay-summed transfer function,
+        roughly analogous to the line profile. Possibly meaningless for the response function?
 
-    def FWHM(self, response=False, velocity=True):
-        """Calculates the full width half maximum of the TF"""
+        Args:
+            response (bool): Whether to calculate the FWHM of the transfer or response function
+            velocity (bool): Whether to return the FWHM in wavelength or velocity-space
+
+        Returns:
+            float: Full width at half maximum for the function.
+                If the function is a doublet, this will not work properly.
+
+        Todo:
+            Catch doublets.
+        """
 
         if velocity:
             midpoints = calculate_midpoints(self._bins_vel)
@@ -500,57 +623,69 @@ class TransferFunction:
             midpoints = calculate_midpoints(self._bins_wave)
 
         if response:
-            return calculate_FWHM(midpoints, np.sum(self._response, 0))
-        else:
-            return calculate_FWHM(midpoints, np.sum(self._emissivity, 0))
+            return calculate_fwhm(midpoints, np.sum(self._response, 0))
 
-    def delay(self, response=False, threshold=0, bounds=None, days=False):
+        return calculate_fwhm(midpoints, np.sum(self._emissivity, 0))
+
+    def delay(self, response: bool = False, threshold: float = 0, bounds: float = None, days: bool = False):
         """
         Calculates the centroid delay for the current data
 
         Args:
-            response (Bool):    Whether or not to calculate the delay from the response
-            threshold (Float):  Exclude all bins with value < threshold
-            bounds (Float):     Return the percentile bounds (i.e. bounds=0.25,
-                                the function will return [0.5, 0.25, 0.75])
+            response (bool): Whether or not to calculate the delay from the response
+            threshold (float): Exclude all bins with value < threshold
+            bounds (float): Return the fractional bounds (i.e. bounds=0.25,
+                            the function will return [0.5, 0.25, 0.75]). Not implemented.
+            days (bool): Whether to return the delay in days or seconds
+
         Returns:
-            Float:              Centroid delay
-            Float[]:            Centroid and lower and upper bounds
+            Union[float, Tuple[float, float, float]]:
+                Centroid delay, and lower and upper fractional bounds if bounds keyword provided
+
+        Todo:
+            Implement fractional bounds. Should just be able to call the centroid_delay function!
         """
         assert threshold < 1 or threshold >= 0,\
             "Threshold is a multiplier to the peak flux! It must be between 0 and 1"
 
-        data = None
         if response:
             data = np.sum(self._response, 1)
         else:
             data = np.sum(self._emissivity, 1)
         value_threshold = np.amax(data) * threshold
-        delay_midp = calculate_midpoints(self._bins_delay)
+        delay_midpoints = calculate_midpoints(self._bins_delay)
 
         delay_weighted = 0
         value_total = 0
-        for value, delay in zip(data, delay_midp):
+        for value, delay in zip(data, delay_midpoints):
             if value >= value_threshold:
                 delay_weighted += value * delay
                 value_total += value
 
         if days:
-            return delay_weighted/(value_total * seconds_per_day)
-        else:
-            return delay_weighted/value_total
+            return delay_weighted/(value_total * SECONDS_PER_DAY)
 
-    def delay_peak(self, response: bool=False, days: bool=False) -> float:
+        return delay_weighted/value_total
+
+    def delay_peak(self, response: bool = False, days: bool = False) -> float:
         """
-        Calculates the peak delay for the current data
+        Calculates the peak delay for the transfer or response function,
+        i.e. the delay at which the response is strongest.
+
+        Args:
+            response (bool): Whether or not to calculate the peak transfer or response function.
+            days (bool): Whether to return the value in seconds or days.
+
+        Returns:
+            float: The peak delay.
         """
         data = self.transfer_function_1d(response=response, days=days)
         peak = data[np.argmax(data[:, 1]), 0]
         return peak
 
-    def run(self, scaling_factor=1.0, limit=None, verbose=False):
+    def run(self, scaling_factor: float = 1.0, limit: int = None, verbose: bool = False) -> 'TransferFunction':
         """
-        Performs a query on the photon DB and bins it
+        Performs a query on the photon DB and bins it.
 
         A TF must be run *after* all filters are applied and before any attempts
         to retrieve or process data from it. This can be a time-consuming call,
@@ -558,8 +693,10 @@ class TransferFunction:
 
         Args:
             scaling_factor (float): 1/Number of cycles in the spectra file
-            limit (int):            Number of photons to limit the TF to, for testing
-            verbose (bool):         Whether to output exactly what the query is
+            limit (int): Number of photons to limit the TF to, for testing.
+                         Recommend testing filters on a small number of photons to begin with.
+            verbose (bool): Whether to output exactly what the query is.
+
         Returns:
             TransferFunction:   Self, for chaining commands
         """
@@ -572,9 +709,6 @@ class TransferFunction:
         assert limit is None or limit > 0,\
             "Limit must either be zero or a positive number!"
         start = time.clock()
-
-        # If we're not in limit mode, fetch all
-        data = None
 
         if verbose:
             if limit is not None:
@@ -610,7 +744,8 @@ class TransferFunction:
                 percentile = (1 - (10**(-self._delay_dynamic_range)))*100
                 range_delay = [0, np.percentile(data[:, 1], percentile)]
                 if verbose:
-                    print("Delays up to the {} percentile value, {}d".format(percentile, range_delay[1]/seconds_per_day))
+                    print("Delays up to the {} percentile value, {}d".format(
+                        percentile, range_delay[1] / SECONDS_PER_DAY))
             else:
                 range_delay = [0, np.amax(data[:, 1])]
             self._bins_delay = np.linspace(range_delay[0], range_delay[1],
@@ -622,10 +757,17 @@ class TransferFunction:
             if self._bins_vel is None:
                 # Data returned as Wavelength, Delay, Weight. Find min and max delays and wavelengths
                 range_wave = [np.amin(data[:, 0]), np.amax(data[:, 0])]
-            # If we do have velocity bins, this was templated off a different line and we need to copy the velocities (but bins are in km! not m!)
+            # If we do have velocity bins, this was templated off a different line
+            # and we need to copy the velocities (but bins are in km! not m!)
             else:
-                range_wave = [doppler_shift_wave(self._line_wave, self._bins_vel[0]*1000), doppler_shift_wave(self._line_wave, self._bins_vel[-1]*1000)]
-                print("Creating new wavelength bins from template, velocities from {:.2e}-{:.2e} to waves: {:.2f}-{:.2f}".format(self._bins_vel[0], self._bins_vel[-1], range_wave[0], range_wave[1]))
+                range_wave = [
+                    doppler_shift_wave(self._line_wave, self._bins_vel[0]*1000),
+                    doppler_shift_wave(self._line_wave, self._bins_vel[-1]*1000)
+                ]
+                print(
+                    "Creating new wavelength bins from template, velocities from {:.2e}-{:.2e} to waves: {:.2f}-{:.2f}"
+                    .format(self._bins_vel[0], self._bins_vel[-1], range_wave[0], range_wave[1])
+                )
 
             # Now create the bins for each dimension
             self._bins_wave = np.linspace(range_wave[0], range_wave[1],
@@ -654,22 +796,28 @@ class TransferFunction:
 
         print("'{}' successfully run ({:.1f}s)".format(self._filename, time.clock()-start))
         # Make absolutely sure this data is wiped as it's *HUGE*
-        del(data)
+        del data
         return self
 
-    def _return_array(self, array, delay, wave, delay_index):
+    def _return_array(
+        self, array: np.ndarray, delay: Optional[float] = None,
+        wave: Optional[float] = None, delay_index: Optional[int] = None
+    ) -> Union[int, float, np.ndarray]:
         """
         Internal function used by response(), emissivity() and count()
 
         Args:
             array (numpy array):    Array to return value from
-            delay (float):          Delay to return value for
-            delay_index (int):      Delay index to return value for
+            delay (float):          Delay to return value for. None if not required, may be 0!
+            delay_index (int):      Delay index to return value for. None if not required, may be 0!
             wave (float):           Wavelength to return value for
+
         Returns:
-            int:                    If array == count
-            float:                  If delay/delay_index and wave provided
-            numpy.Array:            If delay but not wave provided
+            Union[np.ndarray, float]: Either a subset of the array if only delay is provided,
+                or the value of a single array element if delay and wavelength provided.
+
+        Todo:
+            Allow for only wavelength to be provided?
         """
         if delay is None and delay_index is None and wave is None:
             return array
@@ -681,39 +829,36 @@ class TransferFunction:
                 else:
                     return 0
             delay_index = np.searchsorted(self._bins_delay, delay)
+
         elif delay_index is not None:
             if delay_index < 0 or delay_index > self._bins_delay_count:
                 return 0
 
         if wave is None:
-            return(array[delay_index, :])
-        else:
-            return(array[delay_index, np.searchsorted(self._bins_wave, wave)])
+            return array[delay_index, :]
+
+        return array[delay_index, np.searchsorted(self._bins_wave, wave)]
 
     def response_total(self):
         """Returns the total response"""
-        # total = 0
-        # for i in range(0, self._bins_wave_count):
-        #     for j in range(0, self._bins_delay_count):
-        #         total += self._response[j][i] \
-        #               * (self._bins_delay[j+1] - self._bins_delay[j]) \
-        #               * (self._bins_wave[i+1] - self._bins_wave[i])
-        # return total
         return np.sum(self._response)
 
     def delay_bins(self):
         """Returns the range of delays covered by this TF"""
         return self._bins_delay
+
     def response(self, delay=None, wave=None, delay_index=None):
         """Returns the response in this bin"""
         assert self._response is not None,\
             "No response map has been built!"
         return self._return_array(self._response, delay=delay, wave=wave, delay_index=delay_index)
+
     def emissivity(self, delay=None, wave=None, delay_index=None):
         """Returns the emissivity in this bin"""
         assert self._emissivity is not None,\
             "The TF has not been run! Use .run() to query the DB first."
         return self._return_array(self._emissivity, delay=delay, wave=wave, delay_index=delay_index)
+
     def count(self, delay=None, wave=None, delay_index=None):
         """Returns the photon count in this bin"""
         assert self._count is not None,\
@@ -726,20 +871,44 @@ class TransferFunction:
         """Returns a 1d transfer  function"""
         if response:
             if days:
-                return np.column_stack((calculate_midpoints(self._bins_delay/seconds_per_day), np.sum(self._response, 1)))
-            else:
-                return np.column_stack((calculate_midpoints(self._bins_delay), np.sum(self._response, 1)))
+                return np.column_stack(
+                    (calculate_midpoints(self._bins_delay / SECONDS_PER_DAY), np.sum(self._response, 1))
+                )
+
+            return np.column_stack((calculate_midpoints(self._bins_delay), np.sum(self._response, 1)))
+
         else:
             if days:
-                return np.column_stack((calculate_midpoints(self._bins_delay/seconds_per_day), np.sum(self._emissivity, 1)))
-            else:
-                return np.column_stack((calculate_midpoints(self._bins_delay), np.sum(self._emissivity, 1)))
+                return np.column_stack(
+                    (calculate_midpoints(self._bins_delay / SECONDS_PER_DAY), np.sum(self._emissivity, 1))
+                )
 
+            return np.column_stack((calculate_midpoints(self._bins_delay), np.sum(self._emissivity, 1)))
 
-    def plot(self, log=False, normalised=False, rescaled=False, velocity=False, name=None, days=True,
-             response_map=False, keplerian=None, dynamic_range=None, RMS=False, show=False,
-             max_delay=None):
-        """Takes the data gathered by calling 'run' and outputs a plot"""
+    def plot(
+        self, log=False, normalised=False, rescaled=False, velocity=False, name=None, days=True,
+        response_map=False, keplerian=None, dynamic_range=None, rms=False, show=False,
+        max_delay=None
+    ):
+        """
+        Takes the data gathered by calling 'run' and outputs a plot
+
+        Args:
+            log (bool):
+            normalised (bool):
+            rescaled (bool):
+            velocity (bool)
+            name (Optional[str]):
+            days (bool):
+            response_map (bool):
+            keplerian (Optional[dict]):
+            dynamic_range (Optional[int]):
+            rms (bool):
+            show (bool):
+
+        Returns:
+            TransferFunction: Self, for chaining outputs
+        """
         assert response_map is False or self._response is not None,\
             "No data available for response map!"
         assert log is False or response_map is False,\
@@ -765,13 +934,11 @@ class TransferFunction:
         else:
             log_range = 3
 
-        fig = None
-        ax_spec = None
-        ax_tf = None
-        ax_resp = None
         # Set up the multiplot figure and axis
-        fig, ((ax_spec, ax_none), (ax_tf, ax_resp)) = plt.subplots(2, 2, sharex='col', sharey='row',
-            gridspec_kw={'width_ratios': [3,1], 'height_ratios': [1,3]})
+        fig, ((ax_spec, ax_none), (ax_tf, ax_resp)) = plt.subplots(
+            2, 2, sharex='col', sharey='row',
+            gridspec_kw={'width_ratios': [3, 1], 'height_ratios': [1, 3]}
+        )
         ax_none.axis('off')
         ax_resp.invert_xaxis()
         fig.subplots_adjust(hspace=0, wspace=0)
@@ -787,8 +954,10 @@ class TransferFunction:
             else:
                 ratio_text += r"${:.3g}$".format(ratio)
 
-            ax_tf.text(0.05, 0.95, r"$\frac{\Delta L}{L}/\frac{\Delta C}{C}=$"+ratio_text,
-                transform=ax_tf.transAxes, fontsize=18, verticalalignment='top', horizontalalignment='left')
+            ax_tf.text(
+                0.05, 0.95, r"$\frac{\Delta L}{L}/\frac{\Delta C}{C}=$"+ratio_text,
+                transform=ax_tf.transAxes, fontsize=18, verticalalignment='top', horizontalalignment='left'
+            )
 
         # Set the properties that depend on log and wave/velocity status
         cb_label = None
@@ -811,7 +980,6 @@ class TransferFunction:
 
         # Set the xlabel and colour bar label - these differ if velocity or not
         x_bin_mult = 1
-        bins_x = np.zeros(shape=self._bins_wave_count)
         if velocity:
             # We're rescaling the axis to e.g. 10^3 km/s but the colorbar is still in km/s
             # So when we scale by bin width, we need a multiplier on the bin widths
@@ -834,8 +1002,8 @@ class TransferFunction:
 
         # Set the ylabel and y bins for whether it's in days or seconds
         if days:
-            bins_y = np.true_divide(self._bins_delay, float(seconds_per_day))
-            data_plot *= seconds_per_day
+            bins_y = np.true_divide(self._bins_delay, float(SECONDS_PER_DAY))
+            data_plot *= SECONDS_PER_DAY
             ax_tf.set_ylabel(r'Delay $\tau$ (days)')
             cb_label_units += r' d'
         else:
@@ -874,7 +1042,7 @@ class TransferFunction:
         else:
             ax_resp.set_xlabel(r'{}($\tau$) $10^{}$ / s'.format(psi_label, exponent_resp_text))
 
-        if response_map and RMS:
+        if response_map and rms:
             ax_spec.axhline(0, color='grey')
             ax_resp.axvline(0, color='grey')
 
@@ -886,8 +1054,14 @@ class TransferFunction:
             data_plot_rms /= np.amax(data_plot_rms)
             data_plot_spec /= np.amax(data_plot_spec)
 
-            ax_spec.plot(bins_x_midp, data_plot_rms, c='c', label=r'RMS {}(v)/{:.2f}$x10^{}$'.format(psi_label, maximum_rms, exponent_rms_text))
-            ax_spec.plot(bins_x_midp, data_plot_spec, c='m', label=r'{}(v)/{:.2f}$x10^{}$'.format(psi_label, maximum_spec, exponent_spec_text))
+            ax_spec.plot(
+                bins_x_midp, data_plot_rms, c='c',
+                label=r'RMS {}(v)/{:.2f}$x10^{}$'.format(psi_label, maximum_rms, exponent_rms_text)
+            )
+            ax_spec.plot(
+                bins_x_midp, data_plot_spec, c='m',
+                label=r'{}(v)/{:.2f}$x10^{}$'.format(psi_label, maximum_spec, exponent_spec_text)
+            )
             ax_spec.legend(loc='center left', bbox_to_anchor=(1, 0.5), frameon=False)
 
         elif response_map:
@@ -941,26 +1115,28 @@ class TransferFunction:
 
         # Add lines for keplerian rotational outflows
         if keplerian is not None:
-            print('Keplerian!?', keplerian)
             resolution = 1000
             scale_factor = keplerian.get('rescale', 1)
-            r_angle    = np.radians(keplerian["angle"])
-            r_mass_bh  = keplerian["mass"] * apc.M_sun.value
+            r_angle = np.radians(keplerian["angle"])
+            r_mass_bh = keplerian["mass"] * apc.M_sun.value
             r_rad_grav = (6 * apc.G.value * r_mass_bh / np.power(apc.c.value, 2))
-            ar_wave    = np.zeros(resolution)  # * u.angstrom
-            ar_delay   = np.zeros(resolution)  # * u.s
-            ar_phase   = np.linspace(0, np.pi*2, resolution)
-            ar_rad     = np.linspace(keplerian["radius"][0]*r_rad_grav, 20*keplerian["radius"][1]*r_rad_grav, resolution)
-            ar_vel     = np.zeros(resolution)
-            r_rad_min  = r_rad_grav * keplerian["radius"][0]
-            r_rad_max  = r_rad_grav * keplerian["radius"][1]
-            r_vel_min  = keplerian_velocity(r_mass_bh, r_rad_max)
-            r_vel_max  = keplerian_velocity(r_mass_bh, r_rad_min)
+            ar_wave = np.zeros(resolution)  # * u.angstrom
+            ar_delay = np.zeros(resolution)  # * u.s
+            ar_phase = np.linspace(0, np.pi*2, resolution)
+            ar_rad = np.linspace(keplerian["radius"][0]*r_rad_grav, 20*keplerian["radius"][1]*r_rad_grav, resolution)
+            ar_vel = np.zeros(resolution)
+            r_rad_min = r_rad_grav * keplerian["radius"][0]
+            r_rad_max = r_rad_grav * keplerian["radius"][1]
+            r_vel_min = keplerian_velocity(r_mass_bh, r_rad_max)
+            r_vel_max = keplerian_velocity(r_mass_bh, r_rad_min)
+            include_minimum = keplerian.get('include_minimum_velocity', False)
 
             # ITERATE OVER INNER EDGE
-            for r_phase, r_wave, r_delay, r_vel in np.nditer([ar_phase, ar_wave, ar_delay, ar_vel], op_flags=['readwrite']):
-                r_vel[...]   = r_vel_max * np.sin(r_phase) * np.sin(r_angle) / (1e3 * x_bin_mult)
-                r_wave[...]  = doppler_shift_wave(self._line_wave, r_vel * 1e3 * x_bin_mult)
+            for r_phase, r_wave, r_delay, r_vel in np.nditer(
+                    [ar_phase, ar_wave, ar_delay, ar_vel], op_flags=['readwrite']
+            ):
+                r_vel[...] = r_vel_max * np.sin(r_phase) * np.sin(r_angle) / (1e3 * x_bin_mult)
+                r_wave[...] = doppler_shift_wave(self._line_wave, r_vel * 1e3 * x_bin_mult)
                 r_delay[...] = calculate_delay(r_angle, r_phase, r_rad_min, u.day)
             if velocity:
                 ax_tf.plot(ar_vel, ar_delay, '-', c='m')
@@ -968,21 +1144,25 @@ class TransferFunction:
                 ax_tf.plot(ar_wave, ar_delay, '-', c='m')
 
             # # ITERATE OVER OUTER EDGE
-            # for r_phase, r_wave, r_delay, r_vel in np.nditer([ar_phase, ar_wave, ar_delay, ar_vel], op_flags=['readwrite']):
-            #     r_vel[...]   = r_vel_min * np.sin(r_phase) * np.sin(r_angle) / (1e3 * x_bin_mult)
-            #     # r_vel[...]   = r_vel_min * np.sin(r_phase) * 1 / (1e3 * x_bin_mult)
-            #     r_wave[...]  = doppler_shift_wave(self._line_wave, r_vel * 1e3 * x_bin_mult)
-            #     r_delay[...] = calculate_delay(r_angle, r_phase, r_rad_max, u.day)
-            # if velocity:
-            #     ax_tf.plot(ar_vel, ar_delay, '-', c='m')
-            # else:
-            #     ax_tf.plot(ar_wave, ar_delay, '-', c='m')
+            if include_minimum:
+                for r_phase, r_wave, r_delay, r_vel in np.nditer(
+                        [ar_phase, ar_wave, ar_delay, ar_vel], op_flags=['readwrite']
+                ):
+                    r_vel[...] = r_vel_min * np.sin(r_phase) * np.sin(r_angle) / (1e3 * x_bin_mult)
+                    r_wave[...] = doppler_shift_wave(self._line_wave, r_vel * 1e3 * x_bin_mult)
+                    r_delay[...] = calculate_delay(r_angle, r_phase, r_rad_max, u.day)
+                if velocity:
+                    ax_tf.plot(ar_vel, ar_delay, '-', c='m')
+                else:
+                    ax_tf.plot(ar_wave, ar_delay, '-', c='m')
 
             # ITERATE OVER BLUE BOUND
-            for r_rad, r_wave, r_delay, r_vel in np.nditer([ar_rad, ar_wave, ar_delay, ar_vel], op_flags=['readwrite']):
-                r_rad        = r_rad  # * u.m
-                r_vel[...]   = keplerian_velocity(r_mass_bh, r_rad) * np.sin(r_angle) / (1e3 * x_bin_mult)
-                r_wave[...]  = doppler_shift_wave(self._line_wave, r_vel * 1e3 * x_bin_mult)
+            for r_rad, r_wave, r_delay, r_vel in np.nditer(
+                    [ar_rad, ar_wave, ar_delay, ar_vel], op_flags=['readwrite']
+            ):
+                r_rad = r_rad  # * u.m
+                r_vel[...] = keplerian_velocity(r_mass_bh, r_rad) * np.sin(r_angle) / (1e3 * x_bin_mult)
+                r_wave[...] = doppler_shift_wave(self._line_wave, r_vel * 1e3 * x_bin_mult)
                 r_delay[...] = calculate_delay(r_angle, np.pi/2, r_rad, u.day)
             if velocity:
                 ax_tf.plot(ar_vel, ar_delay, '-', c='m')
@@ -990,10 +1170,12 @@ class TransferFunction:
                 ax_tf.plot(ar_wave, ar_delay, '-', c='m')
 
             # ITERATE OVER RED BOUND
-            for r_rad, r_wave, r_delay, r_vel in np.nditer([ar_rad, ar_wave, ar_delay, ar_vel], op_flags=['readwrite']):
-                r_rad        = r_rad  # * u.m
-                r_vel[...]   = -keplerian_velocity(r_mass_bh, r_rad) * np.sin(r_angle) / (1e3 * x_bin_mult)
-                r_wave[...]  = doppler_shift_wave(self._line_wave, r_vel * 1e3 * x_bin_mult)
+            for r_rad, r_wave, r_delay, r_vel in np.nditer(
+                    [ar_rad, ar_wave, ar_delay, ar_vel], op_flags=['readwrite']
+            ):
+                r_rad = r_rad  # * u.m
+                r_vel[...] = -keplerian_velocity(r_mass_bh, r_rad) * np.sin(r_angle) / (1e3 * x_bin_mult)
+                r_wave[...] = doppler_shift_wave(self._line_wave, r_vel * 1e3 * x_bin_mult)
                 r_delay[...] = calculate_delay(r_angle, np.pi/2, r_rad, u.day)
             if velocity:
                 ax_tf.plot(ar_vel, ar_delay, '-', c='m')
@@ -1018,11 +1200,11 @@ class TransferFunction:
 
 
 # ==============================================================================
-def open_database(file_root: str, user:str=None, password:str=None, batch_size:int=25000):
+def open_database(file_root: str, user: str = None, password: str = None, batch_size: int = 25000):
     """
     Open or create a SQL database
 
-    Will open a SQL DB if one already exists, otherwise will create one from
+    Will open a SQLite DB if one already exists, otherwise will create one from
     file. Note, though, that if the process is interrupted the code cannot
     intelligently resume- you must delete the half-written DB!
 
@@ -1035,12 +1217,11 @@ def open_database(file_root: str, user:str=None, password:str=None, batch_size:i
                             out-of-memory errors.
 
     Returns:
-        sqlalchemy engine:  Connection to the database opened
+        sqlalchemy.engine.Connection:  Connection to the database opened
     """
 
     print("Opening database '{}'...".format(file_root))
 
-    db_engine = None
     try:
         db_engine = sqlalchemy.create_engine("sqlite:///{}.db".format(file_root))
     except sqlalchemy.exc.SQLAlchemyError as e:
@@ -1048,8 +1229,8 @@ def open_database(file_root: str, user:str=None, password:str=None, batch_size:i
         sys.exit(1)
 
     # DOES IT ALREADY EXIST? ###
-    Session = sqlalchemy.orm.sessionmaker(bind=db_engine)
-    session = Session()
+    session_maker = sqlalchemy.orm.sessionmaker(bind=db_engine)
+    session = session_maker()
 
     start = time.clock()
 
@@ -1057,7 +1238,7 @@ def open_database(file_root: str, user:str=None, password:str=None, batch_size:i
         session.query(Photon.Weight).first()
         # If so, we go with what we've found.
         print("Found existing filled photon database '{}'".format(file_root))
-    except sqlalchemy.exc.SQLAlchemyError as e:
+    except sqlalchemy.exc.SQLAlchemyError:
         # If not, we populate from the delay dump file. This bit is legacy!
         print("No existing filled photon database, reading from file '{}.delay_dump'".format(file_root))
         Base.metadata.create_all(db_engine)
@@ -1071,7 +1252,7 @@ def open_database(file_root: str, user:str=None, password:str=None, batch_size:i
             try:
                 # Try reading it in as a series of values.
                 values = [float(i) for i in line.split()]
-            except:
+            except ValueError:
                 print("Malformed line: '{}'".format(line))
                 continue
 
@@ -1082,8 +1263,10 @@ def open_database(file_root: str, user:str=None, password:str=None, batch_size:i
 
             # Add the photo using the values. Some must be modified here; ideally, this would be done in Python.
             session.add(Photon(Wavelength=values[1], Weight=values[2], X=values[3], Y=values[4], Z=values[5],
-                               ContinuumScatters=values[6]-values[7], ResonantScatters=values[7], Delay=values[8],
-                               Spectrum=values[10], Origin=(values[11]%10), Resonance=values[12], Origin_matom=(values[11] > 9)))
+                               ContinuumScatters=int(values[6]-values[7]), ResonantScatters=int(values[7]),
+                               Delay=values[8],
+                               Spectrum=int(values[10]), Origin=int(values[11] % 10), Resonance=int(values[12]),
+                               Origin_matom=(values[11] > 9)))
             added += 1
             if added > batch_size:
                 # We commit in batches in order to avoid out-of-memory errors
@@ -1092,31 +1275,49 @@ def open_database(file_root: str, user:str=None, password:str=None, batch_size:i
 
         session.commit()
         session.close()
-        del(session)
+        del session
         print("Successfully read in ({:.1f}s)".format(time.clock()-start))
 
     return db_engine
 # ==============================================================================
 
 
-s_user = "root"
-s_password = "password"
 Base = sqlalchemy.ext.declarative.declarative_base()
 
 
 class Spectrum(Base):
+    """
+    The SQLalchemy table for the spectra. Unused.
+    Could be removed but will break backward compatibility.
+    Information required for this is not stored in the output files.
+
+    # Todo: Implement or remove this table.
+    """
     __tablename__ = "Spectra"
     id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
     angle = sqlalchemy.Column(sqlalchemy.Float)
 
 
 class Origin(Base):
-    __tablename__ = "Origins"
+    """
+    The SQLalchemy table for the photon origins. Unused.
+    Could be removed but will break backward compatibility.
+    Information required for this is not stored in the output files.
+
+    # Todo: Implement or remove this table
+    """
+    __tablename__ = "Origin"
     id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True)
     name = sqlalchemy.Column(sqlalchemy.String)
 
 
 class Photon(Base):
+    """
+    SQLalchemy class for a photon. Why are all the properties capitalised?
+    Changing them to lowercase as would make sense breaks backwards compatibility.
+
+    # Todo: Change to lower case.
+    """
     __tablename__ = "Photons"
     id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True, autoincrement=True)
     Wavelength = sqlalchemy.Column(sqlalchemy.Float)
@@ -1133,51 +1334,5 @@ class Photon(Base):
     Origin_matom = sqlalchemy.Column(sqlalchemy.Boolean)
 
 
-kep_sey = {"angle": 40, "mass": 1e7, "radius": [50, 2000]}
-kep_qso = {"angle": 40, "mass": 1e9, "radius": [50, 20000]}
-
-
-def do_tf_plots(tf_list_inp: List[TransferFunction], dynamic_range: Optional[float] = None,
-                keplerian: Optional[dict] = None, name: Optional[str] = None,
-                file: Optional[str] = None):
-    """
-    Do TF plots for a range of provided TFs, and output delays to file
-    """
-    tf_delay: List[float] = []
-    for tf_inp in tf_list_inp:
-        tf_inp.plot(velocity=True, keplerian=keplerian, log=False, name=name)
-        tf_inp.plot(velocity=True, keplerian=keplerian, log=True,  name=('log' if name is None else name+"_log"), dynamic_range=dynamic_range)
-        tf_delay.append(tf_inp.delay(threshold=0.8))
-
-    if file is not None:
-        print("Saving TF plots to file: {}".format(file+"_tf_delay.txt"))
-        np.savetxt(file+"_tf_delay.txt", np.array(tf_delay, dtype='float'), header="Delay")
-
-
-def do_rf_plots(tf_min: TransferFunction, tf_mid: TransferFunction, tf_max: TransferFunction,
-                keplerian: Optional[dict] = None, name: Optional[str] = None, file: Optional[str] = None):
-    """
-    Do response plot for a TF
-    """
-    if name is not None:
-        name += '_'
-    else:
-        name = ''
-
-    total_min: float = np.sum(tf_min._emissivity).item()
-    total_mid: float = np.sum(tf_mid._emissivity).item()
-    total_max: float = np.sum(tf_max._emissivity).item()
-
-    calibration_factor: float = total_mid / ((total_min + total_max) / 2)
-
-    tf_mid.response_map_by_tf(tf_min, tf_max, cf_min=1, cf_max=1).plot(velocity=True, response_map=True, keplerian=keplerian, name=name+"resp_mid")
-    rf_mid = tf_mid.delay(response=True, threshold=0.8)
-
-    tf_mid.response_map_by_tf(tf_min, tf_mid, cf_min=calibration_factor, cf_max=1).plot(velocity=True, response_map=True, keplerian=keplerian, name=name+"resp_low")
-    rf_min = tf_mid.delay(response=True, threshold=0.8)
-    tf_mid.response_map_by_tf(tf_mid, tf_max, cf_min=1, cf_max=calibration_factor).plot(velocity=True, response_map=True, keplerian=keplerian, name=name+"resp_high")
-    rf_max = tf_mid.delay(response=True, threshold=0.8)
-
-    if file is not None:
-        print("Saving RF plots to file: {}".format(file+"_rf_delay.txt"))
-        np.savetxt(file+"_rf_delay.txt", np.array([rf_min, rf_mid, rf_max], dtype='float'), header="Delay")
+kep_sey = {"angle": 40, "mass": 1e7, "radius": [50, 2000]}  # The default Keplerian outline settings for the Seyfert
+kep_qso = {"angle": 40, "mass": 1e9, "radius": [50, 20000]}  # The default Keplerian outline settings for the QSO
