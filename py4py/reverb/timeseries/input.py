@@ -1,52 +1,70 @@
+"""
+Reverb timeseries import file
+
+Functions for importing data used by CARAMEL and MEMEcho
+"""
 import sys
 
 import astropy as ap
 import astropy.constants as apc
-import astropy.table as apt
+from astropy.table import Table, QTable
+from astropy.units import Unit, Quantity
 from astropy import units as u
 from astropy.units import cds as ucds
-
+from astropy.io.ascii.core import InconsistentTableError
 import numpy as np
 
 import matplotlib.pyplot as plt
 
+from typing import Optional, Tuple, List
 
-def spectra_times(spectra_times_file, time_units=None, time_name='MJD'):
+
+def read_spectra_times(filename: str, time_units: Unit = None, time_name: str = 'MJD') -> Table:
     """
-    Imports a ASCII list of spectrum times
+    Imports a ASCII list of spectrum times.
 
     Args:
-        spectra_times_file (string):    Name of the file with times
-        time_units (astropy.Unit):      Unit the times are in (e.g. u.s, u.d)
+        filename (str): Name of the file with times
+        time_units (Unit): Unit the times are in (e.g. u.s, u.d)
+        time_name (str): The name of the time column
 
     Returns:
-        astropy.QTable:                 Single-column table of time in given units
+        QTable: Single-column table of time in given units
     """
-    spectra_times = ap.table.Table.read(spectra_times_file, format='ascii', names=['time'])
-    spectra_times['time'].unit = time_units
-    spectra_times['time'].meta['name'] = time_name
+    table = Table.read(filename, format='ascii', names=['time'])
+    table['time'].unit = time_units
+    table['time'].meta['name'] = time_name
+    return table
 
-    return spectra_times
 
-
-def lightcurve(lightcurve_file, time_units=None, value_units=None, time_name='MJD', value_name=None,
-               bolometric_correction=None, error_ratio=None, delta_continuum_range=None,
-               target_bolometric_luminosity=None):
+def read_lightcurve(
+        file: str, time_units: Optional[Unit] = None, value_units: Optional[Unit] = None,
+        time_name: str = 'MJD', value_name: Optional[str] = None, bolometric_correction: Optional[float] = None,
+        error_ratio: Optional[float] = None, delta_continuum_range: Optional[float] = None,
+        target_bolometric_luminosity: Optional[Quantity] = None
+) -> Table:
     """
-    Inputs a two- or three-column ascii file of times, continuum values and errors.
+    Inputs a two- or three-column ascii file of times, continuum values and errors, and optionally
+    rescales it to vary in a specific range (defined in terms of %) around a specific mean. If it has no
+    errors, then errors can be automatically generated.
 
     Args:
-        lightcurve_file (string):   Name of the file to read
-        time_units (astropy.Unit):  Unit the times are in (e.g. u.s, u.d)
-        value_units (astropy.Unit): Unit the values are in (e.g. )
-        bolometric_correction(astropy.Quantity):
-                                    Conversion factor from e.g. monochromatic flux to bolometric
-        target_bolometric_luminosity (astropy.Quantity):
-                                    Target mean bolometric luminosity to rescale to.
-        error_ratio (float):        F/F_error ratio to create errors at
+        file (str):   Name of the file to read
+        time_units (Optional[Unit]): Unit the times are in (e.g. u.s, u.d)
+        time_name (str): The name of the unit (for plot axes)
+        value_units (Optional[Unit]): Unit the values are in (e.g. )
+        value_name (Optional[str]): The name of the unit (for plot axes)
+        bolometric_correction(Optional[Quantity]):
+            If the lightcurve is provided in monochromatic flux, this conversion factor
+            is applied to update it to bolometric flux.
+        target_bolometric_luminosity (Optional[Quantity]): Target mean bolometric luminosity to rescale to.
+        delta_continuum_range (Optional[float]): The fractional variation about the mean we would like this lightcurve
+            rescaled to, e.g. +-0.2 about the mean
+        error_ratio (Optional[float]):
+            Target signal to noise ratio in each bin for mock errors, i.e. error in each bin = value/error_ratio.
 
     Returns:
-        astropy.Table:              Two/three column
+        Table: Two/three column, with errors if they exist.
     """
     assert bolometric_correction is None or target_bolometric_luminosity is None,\
         "Rescale either by correction factor or by giving target luminosity, not both!"
@@ -57,14 +75,14 @@ def lightcurve(lightcurve_file, time_units=None, value_units=None, time_name='MJ
     if error_ratio is None:
         # If we've not been given a S/N ratio, the input file should have one
         try:
-            lightcurve = apt.Table.read(lightcurve_file, format='ascii', names=['time', 'value', 'error'])
+            lightcurve = Table.read(file, format='ascii', names=['time', 'value', 'error'])
             lightcurve['error'].unit = value_units
-        except:
+        except InconsistentTableError:
             print("The input file does not have errors! Provide S/N ratio via 'error_ratio' argument")
             sys.exit(1)
     else:
         # Otherwise, construct a fake error from the S/N ratio
-        lightcurve = apt.Table.read(lightcurve_file, format='ascii', names=['time', 'value'])
+        lightcurve = Table.read(file, format='ascii', names=['time', 'value'])
         lightcurve['error'] = lightcurve['value']/error_ratio
 
     lightcurve['time'].unit = time_units
@@ -123,21 +141,44 @@ def lightcurve(lightcurve_file, time_units=None, value_units=None, time_name='MJ
     return lightcurve
 
 
-def spectrum(spectrum_file, bins, values, frequency=True, limits=None,
-             wave_units=None, value_units=None,
-             wave_name=None, value_name=None,
-             error=None,
-             subtract_continuum_with_mask=None, rebin_to=None):
+def read_spectrum(
+        file: str, bins: str, values: str, frequency: bool = True, limits: Optional[Tuple[float, float]] = None,
+        wave_units: Optional[Unit] = None, value_units: Optional[Unit] = None,
+        wave_name: Optional[str] = None, value_name: Optional[str] = None,
+        error: Optional[str] = None,
+        subtract_continuum_with_mask: Optional[Quantity] = None, rebin_to: Optional[int] = None
+) -> Table:
     """
-    Imports a spectrum, and converts to target units
+    Imports a spectrum, and converts to target wavelength units, rebinning if requested.
 
+    Arguments:
+        file (str): The input spectrum file.
+        bins (str): The name of the column with the frequency/wavelength bins.
+        values (str): The name of the column with the spectrum values.
+        frequency (bool):
+            Whether this spectrum is binned in frequency or wavelength.
+            Frequency spectra will be converted to wavelength. Frequency is assumed to be in Hz.
+        error (Optional[str]): The name of the error column in the input spectrum.
+        subtract_continuum_with_mask(Optional[quantity]):
+            If provided, if the spectra has a continuum, it will be subtracted. The continuum
+            profile will be calculated from the region outside of the mask.
+            This subtraction is done after the wavelength units are applied.
+        limits (Optional[Tuple[float, float]]):
+            The spectrum will be ignored outside of these limits, if provided.
+        wave_units (Optional[Unit]): The units the wavelengths are in (or should be in, for frequency mode)
+        wave_name (Optional[str]): The name of the wavelength unit, for plotting.
+        value_units (Optional[Unit]): The units the values are in.
+        value_name (Optional[str]): The name of the value units, for plotting.
+        rebin_to (Optional[int]): Whether the spectrum should be rebinned, and if so to how many bins
     Returns:
-        astropy.Table:  Table of input file. Key columns are 'wave', 'value' and 'error'
+        Table:  Table of input file. Key columns are 'wave', 'value' and 'error'
 
+    Todo: A lot of assumptions are made that limits units are the same as bins units, etc.
+    Todo: The actual 'units' arguments should be used instead of just assuming...
     """
 
     # Import a spectrum with bins
-    spectrum = ap.table.Table.read(spectrum_file, format='ascii')
+    spectrum = ap.table.Table.read(file, format='ascii')
     assert type(wave_units) is u.Quantity or type(wave_units) is u.Unit, \
         "Please provide the units that wavelength is to be taken or produced in!"
 
@@ -251,18 +292,14 @@ def spectrum(spectrum_file, bins, values, frequency=True, limits=None,
         l_unmod = ax.plot(bins, values, label="Original", c='k')
         l_masked = ax.plot(bins, masked_values, label="Masked original", c='g')
         l_fit = ax.plot(spectrum['wave'], continuum_fit(spectrum['wave']), label="Fit to mask", c='b')
-        # No longer necessary now we output to many DP
-        # l_fit_step = ax.plot(spectrum['wave'], np.around(continuum_fit(spectrum['wave']), 2), label="Fit (stepped)", c='b')
         l_mod = ax2.plot(spectrum['wave'], spectrum['value'], label="Subtracted", c='r')
         ax.set_xlabel("Wavelength (Å)")
         ax.set_ylabel("Flux (non-subtracted)")
         ax2.set_ylabel("Flux (subtracted)")
 
         lns = l_unmod+l_masked+l_fit+l_mod
-        # lns = l_unmod+l_masked+l_fit+l_fit_step+l_mod
         labs = [l.get_label() for l in lns]
         ax.legend(lns, labs)
-        # plt.show()
 
     if rebin_to:
         # If we're rebinning to X bins
@@ -338,31 +375,42 @@ def spectrum(spectrum_file, bins, values, frequency=True, limits=None,
         return spectrum
 
 
-def import_caramel(caramel_line_file, caramel_spectra_file):
+def read_caramel_data(caramel_line_file: str, caramel_spectra_file: str) -> Tuple[Table, Table]:
     """
-    Routine to import CARAMEL output spectra into the same spectra format as tss_process creates.
+    Routine to import CARAMEL output spectra into the same spectra format as the timeseries module creates.
+
+    Arguments:
+        caramel_line_file (str): The emission line light curve file.
+        caramel_spectra_file (str): The timeseries of spectra generated by CARAMEL.
+
+    Returns:
+        Table: The emission line values and errors at each timestep.
+        Table: Time-series of spectra generated by CARAMEL.
     """
     print("Importing CARAMEL files")
 
-    caramel_line = ap.table.Table.read(caramel_line_file, format='ascii',
-                                       names=['time', 'value', 'error'])
+    caramel_line = Table.read(
+        caramel_line_file, format='ascii', names=['time', 'value', 'error']
+    )
     caramel_line['time'].unit = u.s
 
     caramel_spectra_stream = open(caramel_spectra_file)
 
+    # The CARAMEL file is structured as:
+    # Line 1: space-separated wavelength bins
+    # Line 2: space-separated values in each bin for timestep 1
+    # Line 3: space-separated errors in each bin for timestep 1
+    # Line 4: space-separated values for each bin in timestep 2 [...]
     lines = caramel_spectra_stream.readlines()
     np_lines = []
     for line in lines[1:]:
         np_lines.append(np.array([float(x) for x in line.strip().split()]))
 
-    # CARAMEL spectra all start at an arbibtary value, they have no zeroes. So remove this.
-    # caramel_min = 999999999
-    # for time_index in range(len(caramel_line)):
-    #     if np.amin(np_lines[1+time_index*2]) < caramel_min:
-    #         caramel_min = np.amin(np_lines[1+time_index*2])
+    # CARAMEL spectra have a minimum value of 1
+    # (across all timesteps; any given spectrum will not have a minimum value of 1!)
     caramel_min = 1
 
-    caramel_spectra = ap.table.Table()  # Line 0 is a comment
+    caramel_spectra = Table()  # Line 0 is a comment
     caramel_spectra['wave'] = np_lines[0]  # Wavelengths
     caramel_spectra['wave'].unit = u.angstrom
     caramel_spectra['value'] = np.zeros(len(np_lines[0]))  # Dummy for mean
@@ -386,5 +434,5 @@ def import_caramel(caramel_line_file, caramel_spectra_file):
     caramel_spectra['value'] /= len(caramel_line)
 
     # The summed line flux includes the caramel forced minimum for everything
-    caramel_line['value'] -= (caramel_min) * len(caramel_spectra)
+    caramel_line['value'] -= caramel_min * len(caramel_spectra)
     return caramel_line, caramel_spectra

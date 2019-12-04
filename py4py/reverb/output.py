@@ -1,7 +1,8 @@
 """
-Reverberation Mapping module
+Reverberation mapping output module
 
-This contains the type used to create and manipulate reverberation maps from Python output files.
+This contains helper functions that bundle up the production of multiple transfer functions or the creation of
+response functions.
 """
 # -*- coding: utf-8 -*-
 # pylint: disable=C0301
@@ -17,31 +18,34 @@ def do_tf_plots(
 ):
     """
     Produces plots of the transfer functions for a list of provided TFs,
-    with matching plotted dynamic ranges and name structures, and
+    with matching plotted dynamic ranges and name structures.
+    Also optionally generates a file containing the centroid delays for each transfer function.
 
-    Args:
-        tf_list_inp (List[TransferFunction]):
-        dynamic_range (Optional[float]):
-        keplerian (Optional[dict]):
-        name (Optional[str]):
-        file (Optional[str]):
-        threshold (float):
+    Arguments:
+        tf_list_inp (List[TransferFunction]): The transfer functions to plot.
+        dynamic_range (Optional[float]): The dynamic range to plot them all across (see TransferFunction.plot).
+        keplerian (Optional[dict]): The keplerian orbit parameters to overplot on all of them.
+        name (Optional[str]): The name component to be added to the output plot filenames,
+            e.g. [tf.name]_[name].eps. Useful for ending up with e.g. c4_with_keplerian.eps.
+        file (Optional[str]): The output filename for the list of centroid delays.
+        threshold (float): The peak flux threshold to use for calculating the centroid (see TransferFunction.delay).
 
-    Todo:
-        This should be in a separate folder
+    Outputs:
+        {file}_tf_delay.txt [Optional]
+        {tf.filename}_name.eps [for each tf in tf_list_inp]
     """
-    tf_delay: List[float] = []
+    delays: List[float] = []
     for tf_inp in tf_list_inp:
         tf_inp.plot(velocity=True, keplerian=keplerian, log=False, name=name)
         tf_inp.plot(
             velocity=True, keplerian=keplerian, log=True,
             name=('log' if name is None else name+"_log"), dynamic_range=dynamic_range
         )
-        tf_delay.append(tf_inp.delay(threshold=threshold))
+        delays.append(tf_inp.delay(threshold=threshold))
 
     if file is not None:
         print("Saving centroid transfer function delays to file: {}".format(file+"_tf_delay.txt"))
-        np.savetxt(file+"_tf_delay.txt", np.array(tf_delay, dtype='float'), header="Delay")
+        np.savetxt(file+"_tf_delay.txt", np.array(delays, dtype='float'), header="Delay")
 
 
 def do_rf_plots(
@@ -49,18 +53,26 @@ def do_rf_plots(
     keplerian: Optional[dict] = None, name: Optional[str] = None, file: Optional[str] = None
 ):
     """
-    Do response plot for a TF
+    Do response plot for a transfer function, optionally with keplerian disk lines on it.
+    This will generate not just a response function from the two bracketing TFs, but one
+    from the midpoint TF and the bracketing ones (e.g. Min-Max, Min-Mid, Mid-Max).
+    Ideally, all three should be similar- if they are not, it suggests that the change
+    in luminosity from min-max covers a point of inflection in d[Ionisation state]dL.
 
-    Args:
-        tf_min (TransferFunction):
-        tf_mid (TransferFunction):
-        tf_max (TransferFunction):
-        keplerian (Optional[dict]):
-        name (Optional[dict]):
-        file (Optional[dict]):
+    Arguments:
+        tf_min (TransferFunction): The low-state TF
+        tf_mid (TransferFunction): The TF bracketed by low and high to produce the RF for.
+        tf_max (TransferFunction): The high-state TF
+        keplerian (Optional[dict]): The keplerian orbit parameters to overplot on all of them.
+        name (Optional[str]): The name component to be added to the output plot filenames,
+            e.g. [tf.name]_[name].eps. Useful for ending up with e.g. c4_with_keplerian.eps.
+        file (Optional[str]): The output filename for the list of centroid delays.
 
-    Todo:
-        This should be in a separate folder
+    Outputs:
+        {tf_mid.name}_resp_mid.eps
+        {tf_mid.name}_resp_low.eps
+        {tf_mid.name}_resp_high.eps
+        {file}_rf_delay.txt [Optional]
     """
     if name is not None:
         name += '_'

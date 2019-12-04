@@ -1,11 +1,10 @@
 """
-.. module:: tss_output
-   :synopsis: Manages output for the time series of spectra code.
+Timeseries output module
 
-.. moduleauthor:: Sam Mangham <s.w.mangham@soton.ac.uk>
-
-
+This module contains the output code for the timeseries analysis. This is intended to output to the formats
+the CARAMEL and MEMEcho team analyse & plot.
 """
+import os
 import numpy as np
 
 import matplotlib.pyplot as plt
@@ -13,31 +12,34 @@ import matplotlib.animation as ani
 from matplotlib.figure import figaspect
 
 from astropy import units as u
-
-import tfpy
+from astropy.table import Table
+from astropy.units import Quantity
 
 import shutil
 
+from py4py.physics import doppler_shift_wave
+from py4py.reverb import TransferFunction
 
-def CARAMEL(lightcurve, spectra, spectra_times, suffix):
+from typing import List, Optional, Tuple
+
+
+def write_caramel_data(lightcurve: Table, spectra: Table, spectra_times: Table, suffix: str):
     """
-    Given a lightcurve, series of spectra and time outputs to CARAMEL format
+    Given a lightcurve, series of spectra and time outputs to CARAMEL format, and then
+    compresses the output into a ZIP file.
 
-    Args:
-        lightcurve (Table):     Continuum values and times, in seconds and real units
-        spectra (Table):        Table of wavelengths and spectra. Continuum-subtracted.
-        spectra_times (Table):  Table of spectrum times
-        suffix (str):        Suffix appended to filename
-
-    Returns:
-        None
+    Arguments:
+        lightcurve (Table): Continuum values and times, in seconds and real units.
+        spectra (Table): Table of wavelengths and spectra. Continuum-subtracted.
+        spectra_times (Table): Table of spectrum times.
+        suffix (str): Suffix appended to filename. Intended to sort outputs as e.g. caramel/qso/caramel_lightcurve_qso.
 
     Outputs:
-        caramel_lightcurve.txt
-        caramel_spectra.txt
-        caramel_spectra_times.txt
+        caramel/{suffix}/caramel_lightcurve_{suffix}.txt: Continuum lightcurve.
+        caramel/{suffix}/caramel_spectra_{suffix}.txt: Values of the mock observations.
+        caramel/{suffix}/caramel_spectra_times_{suffix}.txt: Times of the mock observations.
+        caramel/caramel_{suffix}.zip: Zip of all the outputs.
     """
-
     # Lightcurve file format:
     # Time (s)
     # Value (rescaled from 1-100)
@@ -52,7 +54,12 @@ def CARAMEL(lightcurve, spectra, spectra_times, suffix):
                      / (np.amax(lightcurve['value']) - np.amin(lightcurve['value'])))
     error = (error * 9)
 
-    np.savetxt('caramel/{}/caramel_lightcurve_{}.txt'.format(suffix, suffix), np.column_stack((time, value, error)))
+    np.savetxt(
+        os.path.join(
+            'caramel', suffix, 'caramel_lightcurve_{}.txt'.format(suffix)
+        ),
+        np.column_stack((time, value, error))
+    )
 
     # Spectrum times file format:
     # Time (s)
@@ -61,7 +68,12 @@ def CARAMEL(lightcurve, spectra, spectra_times, suffix):
     times = np.array(spectra_times['time'].to(u.s))
     dummy = [0] * len(times)
 
-    np.savetxt('caramel/{}/caramel_spectra_times_{}.txt'.format(suffix, suffix), np.column_stack((times, dummy, dummy)))
+    np.savetxt(
+        os.path.join(
+            'caramel', suffix, 'caramel_spectra_times_{}.txt'.format(suffix)
+        ),
+        np.column_stack((times, dummy, dummy))
+     )
 
     # Spectra file format:
     # First row is # INT, where INT is number of wavelength bins
@@ -85,76 +97,87 @@ def CARAMEL(lightcurve, spectra, spectra_times, suffix):
         to_save.append(value)
         to_save.append(error)
 
-    np.savetxt('caramel/{}/caramel_spectra_{}.txt'.format(suffix, suffix), to_save, header='{}'.format(len(spectra)))
-    shutil.make_archive('caramel_{}'.format(suffix), 'zip', 'caramel/{}/'.format(suffix))
+    np.savetxt(
+        os.path.join(
+            'caramel', suffix, 'caramel_spectra_{}.txt'.format(suffix)
+        ),
+        to_save, header='{}'.format(len(spectra))
+    )
+    shutil.make_archive(
+        'caramel_{}'.format(suffix), 'zip',
+        os.path.join('caramel', suffix)
+    )
     return
 
 
-def MEMECHO(lightcurve, spectra, spectra_times, suffix):
+def write_memecho_data(lightcurve: Table, spectra: Table, spectra_times: Table, suffix: str):
     """
-    Given a lightcurve, series of spectra and time outputs to MEMECHO format
+    Given a lightcurve, series of spectra and time outputs to MEMECHO format, outputs them
+    to files and zips them up for distribution.
 
-    Args:
-        lightcurve (Table):     Continuum values and times, in seconds and real units
-        spectra (Table):        Table of wavelengths and spectra. Not continuum-subtracted.
-        spectra_times (Table):  Table of spectrum times
-        suffix (String):        Suffix appended to file name
-
-    Returns:
-        None
+    Arguments:
+        lightcurve (Table): Continuum values and times, in seconds and real units.
+        spectra (Table): Table of wavelengths and spectra. Not continuum-subtracted.
+        spectra_times (Table): Table of spectrum times.
+        suffix (str): Suffix appended to file name.
 
     Outputs:
-        prepspec_*.txt
-        prepspec_times.txt
-        memecho_lightcurve.txt
+        memecho/{suffix}/prepspec_{suffix}_{timestep}.txt: The mock observations for each timestep
+        memecho/{suffix}/prepspec_times.txt: The times of each mock observation, and spectra file associated with each.
+        memecho/{suffix}/memecho_lightcurve.txt: The driving continuum lightcurve.
+        memecho/memecho_{suffix}.zip: Zip of all the outputs
     """
-
     names = []
-    for iter, column in enumerate(spectra.colnames[5:]):
-        np.savetxt('memecho/{}/prepspec_{}_{:03d}.txt'.format(suffix, suffix, iter), np.column_stack((spectra['wave'], spectra[column], spectra['error'])))
-        names.append('memecho/{}/prepspec_{}_{:03d}.txt'.format(suffix, suffix, iter))
+    for index, column in enumerate(spectra.colnames[5:]):
+        np.savetxt(
+            os.path.join(
+                'memecho', suffix, 'prepspec_{}_{:03d}.txt'.format(suffix, index)
+            ),
+            np.column_stack((spectra['wave'], spectra[column], spectra['error']))
+        )
+        names.append(
+            os.path.join('memecho', suffix, 'prepspec_{}_{:03d}.txt'.format(suffix, index))
+        )
 
-    with open('memecho/{}/prepspec_times_{}.txt'.format(suffix, suffix), 'w') as file:
+    with open(os.path.join('memecho', suffix, 'prepspec_times_{}.txt'.format(suffix)), 'w') as file:
         for name, time in zip(names, spectra_times['time']):
             file.write("{} {}\n".format(name, time))
 
-    with open('memecho/{}/memecho_lightcurve_{}.txt'.format(suffix, suffix), 'w') as file:
+    with open(os.path.join('memecho', suffix, 'memecho_lightcurve_{}.txt'.format(suffix)), 'w') as file:
         for time, value, error in zip(lightcurve['time'], lightcurve['value'], lightcurve['error']):
             file.write("{} {} {}\n".format(time, value, error))
 
-    shutil.make_archive('memecho_{}'.format(suffix), 'zip', 'memecho/{}/'.format(suffix))
-    return
+    shutil.make_archive(
+        'memecho_{}'.format(suffix), 'zip',
+        os.path.join('memecho', suffix)
+    )
 
 
-# def times(times, spectra):
-#     times_out = times.copy()
-#
-#     times['line'] = np.zeros(len(times))
-#
-#     for step in range(0, len(times)):
-#         times['line'][step] = np.sum(spectra[5+step])
-#
-
-
-def trailed_spectrogram(spectra, lightcurve, spectra_times, filename):
+def trailed_spectrogram(spectra: Table, lightcurve: Table, spectra_times: Table, filename: str):
     """
-    Generate a trailed spectrogram of the time series of spectra.
+    Generate a trailed spectrogram of both the time series of spectra and difference relative to the mean,
+    with the continuum as an adjacent line plot.
 
     Arguments:
-        spectra (Table): Spectra (starting at column 3)
-        spectra_times (Table): Times to plot the TS for
-        filename (String): File to write to
+        spectra (Table): Spectra (starting at column 3).
+        spectra_times (Table): Times to plot the TS for.
+        lightcurve (Table): The continuum lightcurve.
+        filename (String): File to write to.
 
     Outputs:
-        filename.eps: Time series output.
+        {filename}.eps: Time series output.
     """
 
     # We want a pcolour plot for the time series, with an adjacent
     # fig, (ax_ts, ax_c) = plt.subplots(1, 2, gridspec_kw={'width_ratios': [3, 1]} , sharey=True)
 
     w, h = figaspect(1.25/1)
-    fig, ((ax_spec, ax_none, ax_none2), (ax_ts, ax_c, ax_cb), (ax_ts2, ax_c2, ax_cb2)) = plt.subplots(3, 3, sharex='col', sharey='row',
-        gridspec_kw={'width_ratios': [3, 1, 1], 'height_ratios': [1, 3, 3]}, figsize=(w, h))
+    fig, ((ax_spec, ax_none, ax_none2), (ax_ts, ax_c, ax_cb), (ax_ts2, ax_c2, ax_cb2)) = \
+        plt.subplots(
+            3, 3, sharex='col', sharey='row',
+            gridspec_kw={'width_ratios': [3, 1, 1], 'height_ratios': [1, 3, 3]}, figsize=(w, h)
+        )
+
     ax_none.axis('off')
     ax_none2.axis('off')
     ax_cb.axis('off')
@@ -173,39 +196,38 @@ def trailed_spectrogram(spectra, lightcurve, spectra_times, filename):
     time_bounds[-1] = (spectra_times['time'][-1] + (spectra_times['time'][-1] - spectra_times['time'][-2]) / 2)
 
     # Now we do the pcolour plot, with the *true* lightcurve along the side. Maybe we truncate or remove this...
-    pcol = ax_ts.pcolor(spectra.meta["bounds"], time_bounds, pcolor_data/np.amax(pcolor_data))
-    ax_ts.set_xlabel(r'Wavelength ($\AA$)')
-    ax_ts.set_ylabel("Time (MJD)")
-    ax_ts.set_ylim(time_bounds[0], time_bounds[-1])
-    ax_ts.xaxis.set_tick_params(rotation=0, pad=1)
-    ax_ts.yaxis.set_tick_params(rotation=45, labelsize=8)
-    ax_ts.yaxis.tick_left()
-    ax_ts.set_xlim([6300, 6850])
-
-    delta = (pcolor_data - spectra['value'])/np.amax(pcolor_data)
+    pcol = ax_ts.pcolor(
+        spectra.meta["bounds"], time_bounds, pcolor_data/np.amax(pcolor_data)
+    )
+    delta = (pcolor_data - spectra['value']) / np.amax(pcolor_data)
     cb_max = np.amax(np.abs(delta))
 
-    pcol2 = ax_ts2.pcolor(spectra.meta["bounds"], time_bounds, delta,
-        vmin=-cb_max, vmax=cb_max, cmap='RdBu_r')
-    ax_ts2.set_xlabel(r'Wavelength ($\AA$)')
-    ax_ts2.set_ylabel("Time (MJD)")
-    ax_ts2.set_ylim(time_bounds[0], time_bounds[-1])
-    ax_ts2.xaxis.set_tick_params(rotation=0, pad=1)
-    ax_ts2.yaxis.set_tick_params(rotation=45, labelsize=8)
-    ax_ts2.yaxis.tick_left()
-    ax_ts2.set_xlim([6300, 6850])
+    pcol2 = ax_ts2.pcolor(
+        spectra.meta["bounds"], time_bounds, delta, vmin=-cb_max, vmax=cb_max, cmap='RdBu_r'
+    )
+
+    for ax in (ax_ts, ax_ts2):
+        ax.set_xlabel(r'Wavelength ($\AA$)')
+        ax.set_ylabel("Time (MJD)")
+        ax.set_ylim(time_bounds[0], time_bounds[-1])
+        ax.xaxis.set_tick_params(rotation=0, pad=1)
+        ax.yaxis.set_tick_params(rotation=45, labelsize=8)
+        ax.yaxis.tick_left()
+        ax.set_xlim([6300, 6850])
 
     ax_spec.set_xlim([6300, 6850])
     ax_spec.set_xlabel("λ (Å)")
     ax_spec.set_ylabel(r'$L/L_{\rm max}$')
     ax_spec.plot(spectra['wave'], spectra['value']/np.amax(spectra['value']))
 
-    ax_c.invert_xaxis()
-    ax_c.plot(100*(lightcurve['value']-np.mean(lightcurve['value']))/np.mean(lightcurve['value']), lightcurve['time'], '-', c='m')
-    ax_c.xaxis.set_tick_params(rotation=0, pad=12)
-    ax_c2.invert_xaxis()
-    ax_c2.plot(100*(lightcurve['value']-np.mean(lightcurve['value']))/np.mean(lightcurve['value']), lightcurve['time'], '-', c='m')
-    ax_c2.xaxis.set_tick_params(rotation=0, pad=12)
+    for ax in (ax_c, ax_c2):
+        ax.invert_xaxis()
+        ax.plot(
+            100.0*(lightcurve['value']-np.mean(lightcurve['value']))/np.mean(lightcurve['value']),
+            lightcurve['time'], '-', c='m'
+        )
+        ax.xaxis.set_tick_params(rotation=0, pad=12)
+
     ax_c2.set_xlabel(r"ΔC (%)")
 
     tf_wave = 6562.8
@@ -216,9 +238,9 @@ def trailed_spectrogram(spectra, lightcurve, spectra_times, filename):
     ax_vel = ax_spec.twiny()
     ax_vel.set_xlim(ax_spec.get_xlim())
     ax_vel.set_xticks([
-        tfpy.doppler_shift_wave(tf_wave, -1e7),
+        doppler_shift_wave(tf_wave, -1e7),
         tf_wave,
-        tfpy.doppler_shift_wave(tf_wave, +1e7)
+        doppler_shift_wave(tf_wave, +1e7)
     ])
     ax_vel.set_xticklabels([
         r"10", r"0", r"10"
@@ -236,7 +258,25 @@ def trailed_spectrogram(spectra, lightcurve, spectra_times, filename):
     plt.close(fig)
 
 
-def animation(spectra, lightcurve, spectra_times, times, filename, is_reversed=False):
+next_column = None  # Global variable required for plotting write_animation with matplotlib
+
+
+def write_animation(
+        spectra: Table, lightcurve: Table, spectra_times: Table, times: Table, filename: str, is_reversed: bool = False
+):
+    """
+
+    Arguments:
+        spectra (Table): Spectra (starting at column 3).
+        spectra_times (Table): Times to plot the spectra values for
+        times (Table): High time-resolution interpolated continuum lightcurve.
+        lightcurve (Table): The continuum lightcurve.
+        filename (str): File to write to
+        is_reversed (bool): Whether newer points should be overlaid by older ones
+
+    Outputs:
+        {filename}.mp4
+    """
     global next_column
     figure, (axis, ax_dc) = plt.subplots(2, 1, gridspec_kw={'height_ratios': [3, 1]})
     figure.subplots_adjust(hspace=.3, wspace=0)
@@ -278,14 +318,27 @@ def animation(spectra, lightcurve, spectra_times, times, filename, is_reversed=F
     line_max = axis.plot(spectra['wave'], spectra['value_max'], '-.', c='k', zorder=0, label='Maximum')
 
     # Set up colour palette with time
-    line_colours = [plt.cm.jet(x) for x in np.linspace(0.0, 1.0, len(spectra_times))]
+    # line_colours = [plt.cm.jet(x) for x in np.linspace(0.0, 1.0, len(spectra_times))]
 
-    # Artists is the list of objects redrawn each animation (so all plots)
+    # Artists is the list of objects redrawn each write_animation (so all plots)
     artists = [line_start]
     # We evaluate the spectra one-by-one for timestamps, starting with 1st (i.e. spectra column 2)
     next_column = 5
 
-    def zorder(step, steps, reverse=False):
+    def zorder(step: int, steps: int, reverse: bool = False) -> int:
+        """
+        Function for returning the z-order for each observation, used when rendering the plot.
+        Do we want new points over old, or old points over new?
+
+        Arguments:
+            step (int): Current timestep.
+            steps (int): Number of timesteps.
+            reverse (bool): Whether newer points should get overlaid by older ones.
+
+        Returns:
+            int: If reverse, a number that goes down with timestep.
+                If not, a number that goes up with timestep (but remains below 0).
+        """
         # Straightforward- do we want new points over old, or old over new?
         # Latter is useful for showing how a step change propagates
         if reverse:
@@ -293,13 +346,21 @@ def animation(spectra, lightcurve, spectra_times, times, filename, is_reversed=F
         else:
             return step-steps
 
-    def update_figure(step):
+    def update_figure(step: int):
+        """
+        Called each timestep to update the plot object.
+
+        Arguments:
+            step (int): The current timestep.
+        """
         global next_column
+
         time_colour = 'grey'
         if spectra_times['time'][0] <= times['time'][step] <= spectra_times['time'][-1]:
             # If this timestep is in the range of spectra, assign it a colour
-            time_colour = plt.cm.jet((times['time'][step]-spectra_times['time'][0]) /
-                                     (spectra_times['time'][-1] - spectra_times['time'][0]))
+            time_colour = plt.cm.jet(
+                (times['time'][step]-spectra_times['time'][0]) / (spectra_times['time'][-1] - spectra_times['time'][0])
+            )
 
         if times['time'][step] > spectra.columns[next_column].meta['time']:
             # If we've gone past the current column,
@@ -317,15 +378,25 @@ def animation(spectra, lightcurve, spectra_times, times, filename, is_reversed=F
         artists.append(point_new)
         return artists,
 
-    # Generate animation and save to file
+    # Generate write_animation and save to file
     animation = ani.FuncAnimation(figure, update_figure, frames=len(times))
     animation.save("{}.mp4".format(filename), fps=24)
     plt.close(figure)
 
 
-def rescaled_rfs(tfs, rescale_max_time, figure_max_time, keplerian=None):
+def rescaled_rfs(
+        tfs: List[TransferFunction], rescale_max_time: Quantity, figure_max_time: Quantity, keplerian: dict = None
+):
     """
     Outputs RFs for rescaled versions of the input
+
+    Arguments:
+        tfs (List[TransferFunction]):
+        rescale_max_time (Quantity):
+        figure_max_time (Quantity):
+        keplerian (dict):
+
+    Outputs:
     """
     for tf in tfs:
         delay_bins = (tf.delay_bins() * u.s).to(u.day)
@@ -338,7 +409,14 @@ def rescaled_rfs(tfs, rescale_max_time, figure_max_time, keplerian=None):
                 keplerian=keplerian)
 
 
-def plot_spectra_rms(spectra, filenames):
+def plot_spectra_rms(spectra: Table, filenames: List[str]):
+    """
+    Arguments:
+        spectra (Table):
+        filenames (List[str]):
+
+    Outputs:
+    """
     for (spec_full, spec_line), filename in zip(spectra, filenames):
         fig, (ax_full, ax_line) = plt.subplots(2, 1, sharex=True)
         plt.tight_layout()
@@ -354,14 +432,18 @@ def plot_spectra_rms(spectra, filenames):
         rms_full = np.sqrt(np.sum(np.square(full_series), 1) / len(spec_full))
         rms_line = np.sqrt(np.sum(np.square(line_series), 1) / len(spec_line))
 
-        ax_full.errorbar(spec_full['wave'], spec_full['value'],
-                         fmt='-', c='r', yerr=spec_full['error'], label='Spectrum')
-        ax_full.errorbar(spec_full['wave'], rms_full,
-                         fmt='-', c='b', label='RMS')
-        ax_line.errorbar(spec_line['wave'], spec_line['value'],
-                         fmt='-', c='r', yerr=spec_line['error'], label='Spectrum')
-        ax_line.errorbar(spec_line['wave'], rms_line,
-                         fmt='-', c='b', label='RMS')
+        ax_full.errorbar(
+            spec_full['wave'], spec_full['value'], fmt='-', c='r', yerr=spec_full['error'], label='Spectrum'
+        )
+        ax_full.errorbar(
+            spec_full['wave'], rms_full, fmt='-', c='b', label='RMS'
+        )
+        ax_line.errorbar(
+            spec_line['wave'], spec_line['value'], fmt='-', c='r', yerr=spec_line['error'], label='Spectrum'
+        )
+        ax_line.errorbar(
+            spec_line['wave'], rms_line, fmt='-', c='b', label='RMS'
+        )
 
         plt.savefig("{}.eps".format(filename), bbox_inches='tight')
         plt.close(fig)

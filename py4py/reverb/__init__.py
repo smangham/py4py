@@ -2,6 +2,27 @@
 Reverberation Mapping module
 
 This contains the type used to create and manipulate reverberation maps from Python output files.
+
+Example:
+
+    For an existing delay output file called 'qso.delay_dump', to generate a TF plot for the C4
+    line for a specific spectrum, with axis of velocity offset vs days, you would do::
+
+        qso_conn = open_database('qso')
+        tf_c4_1 = TransferFunction(
+            qso_conn, continuum=1e43, wave_bins=100, delay_bins=100, filename='qso_c4_spectrum_1'
+        )
+        tf_c4_1.spectrum(1).line(443).run()
+        tf_c4_1.plot(velocity=True, days=True)
+
+    Given database queries can take a long time, it is advisable to pickle a TF that has been run
+    so you can access it later on. Note, however: Once a TF has been restored from a pickle,
+    you can no longer change the filters and re-run.
+
+        with open('qso_c4_spectrum_1', 'wb') as file:
+            pickle.dump(tf_c4_1, file)
+
+
 """
 # -*- coding: utf-8 -*-
 # pylint: disable=C0301
@@ -17,108 +38,14 @@ import sqlalchemy.orm
 import sqlalchemy.orm.query
 import matplotlib
 from astropy import units as u
-from typing import List, Optional, Union, Tuple
+from typing import List, Optional, Union
+
+from py4py.array import calculate_fwhm, calculate_midpoints
+from py4py.physics import keplerian_velocity, doppler_shift_wave, doppler_shift_vel
 
 # Constant used for rescaling data.
 # Probably already exists in apc but I don't want to faff around with units
 SECONDS_PER_DAY = 60 * 60 * 24
-
-
-# ==============================================================================
-# MATHS FUNCTIONS
-# ==============================================================================
-def calculate_fwhm(midpoints: np.ndarray, vals: np.ndarray) -> float:
-    """
-    Calculate FWHM from arrays
-
-    Taken from http://stackoverflow.com/questions/10582795/finding-the-full-width-half-maximum-of-a-peak
-    I don't think this can cope with being passed a doublet or an array with no
-    peak within it. Doublets will calculate FWHM from the HM of both!
-
-    Args:
-        midpoints (np.ndarray): Array of bin midpoints
-        vals (np.ndarray): Array of bin values
-
-    Returns:
-        float: FWHM of the peak (should it exist!)
-    """
-    # Create 'difference' array by subtracting half maximum
-    difference = vals - (np.amax(vals) / 2)
-    # Find the points where the difference is positive
-    indexes = np.where(difference > 0)[0]
-    # The first and last positive points are the edges of the peak
-    return abs(midpoints[indexes[-1]] - midpoints[indexes[0]])
-
-
-def calculate_centroid(
-    bins: np.ndarray, vals: np.ndarray, bounds: float = None
-) -> Union[float, Tuple[float, float, float]]:
-    """
-    Returns the centroid position, with optional percentile bounds.
-
-    Args:
-        bins (np.ndarray): Array of bin bounds
-        vals (np.ndarray): Array of bin values
-        bounds (float):    Fraction from 0-0.5. Percentile either side of the
-                           centroid to find (e.g. .2 -> 30%, 70%)
-
-    Returns:
-        Union[float, Tuple(float, float, float)]:
-            Flux-weighted centroid, and if 'bounds' passed both lower and upper percentile bounds
-    """
-    centroid_total = np.sum(vals)
-    centroid_position = np.sum(np.multiply(bins, vals))/centroid_total
-
-    if bounds is not None:
-        # If we're finding bounds
-        bound_width = bounds/2
-        bound_min = -1
-        bound_max = -1
-        # Find the upper bound
-        value_total = 0
-        for index, value in enumerate(vals):
-            # Starting at 0, add the value in this bin to the running total
-            value_total += value
-            if value_total/centroid_total >= 0.5+bound_width:
-                # If this total is > the bound we're looking for, record the bin and stop
-                bound_max = bins[index]
-                break
-        # Find the lower bound
-        value_total = centroid_total
-        for index, value in enumerate(vals[::-1]):
-            # Starting at the total value, subtract the value in this bin from the running total
-            value_total -= value
-            if value_total/centroid_total <= 0.5-bound_width:
-                # If this total is < the bound we're looking for, record the bin and stop
-                bound_min = bins[len(bins)-1-index]
-                break
-        # On reflection, they could both sum since I'm just iterating backwards.
-        # Also, I could use zip() even though they're numpy arrays as zip works fine
-        # if you don't want to modify the array entries.
-        # Maybe go over this later, should be easy enough to test.
-
-        # Return the centroid and the bins.
-        # NOTE: If the value exceeds the bound range midway through a cell, it'll just return the min/max
-        # for that cell as appropriate. This will overestimate the error on the centroid.
-        return centroid_position, bound_min, bound_max
-    else:
-        return centroid_position
-
-
-def calculate_midpoints(bins: np.ndarray) -> np.ndarray:
-    """
-    Converts bin boundaries into midpoints
-
-    Args:
-        bins (np.ndarray):    Array of bin boundaries
-
-    Returns:
-        np.ndarray:        Array of bin midpoints (1 shorter!)
-    """
-    midpoints = np.zeros(shape=len(bins)-1)
-    for i in range(0, len(bins)-1):
-        midpoints[i] = (bins[i] + bins[i+1]) / 2
-    return midpoints
 
 
 # ==============================================================================
@@ -154,51 +81,6 @@ def calculate_delay(angle: float, phase: float, radius: float, days: bool = True
         return delay / SECONDS_PER_DAY
     else:
         return delay
-
-
-def keplerian_velocity(mass: float, radius: float) -> float:
-    """
-    Calculates Keplerian velocity at given radius
-
-    Args:
-        mass (float): Object mass in kg
-        radius (float): Orbital radius in m
-
-    Returns:
-        float: Orbital velocity in m/s
-    """
-    return np.sqrt(apc.G.value * mass / radius)
-
-
-def doppler_shift_wave(line: float, vel: float) -> float:
-    """
-    Converts passed line and velocity into red/blue-shifted wavelength
-
-    Args:
-        line (float): Line wavelength (any length unit)
-        vel (float): Doppler shift velocity (m/s)
-
-    Returns:
-        float: Doppler shifted line wavelength (as above)
-    """
-    return line * apc.c.value / (apc.c.value - vel)
-
-
-def doppler_shift_vel(line: float, wave: float) -> float:
-    """
-    Converts passed red/blue-shifted wave into velocity
-
-    Args:
-        line (float):   Base line wavelength (any length unit)
-        wave (float):   Doppler shifted line wavelength (as above)
-
-    Returns:
-        float:          Speed of Doppler shift
-    """
-    if wave > line:
-        return -1*apc.c.value * (1 - (line / wave))
-    else:
-        return apc.c.value * ((line / wave) - 1)
 
 
 # ==============================================================================
@@ -250,22 +132,25 @@ class TransferFunction:
         corresponds to if its template was a different line, unless you specify
         thhat the template was of a different line.
 
-        Args:
+        Arguments:
             database (sqlalchemy.engine.Connection):
-                                The database to be queried for this TF
-            filename (string):  The root filename for plots created for this TF
-            continuum (float):  The continuum value associated with this TF
-            wave_bins (int):    Number of wavelength/velocity bins
-            delay_bins (int):   Number of delay time bins
+                                The database to be queried for this TF.
+            filename (string):  The root filename for plots created for this TF.
+            continuum (float):  The continuum value associated with this TF.
+            wave_bins (int):    Number of wavelength/velocity bins.
+            delay_bins (int):   Number of delay time bins.
             template (TransferFunction):
                                 Other TF to copy all filter settings from. Will
-                                match delay, wave and velocity bins exactly
+                                match delay, wave and velocity bins exactly.
             template_different_line (bool):
                                 Is this TF going to share delay & velocity bins
                                 but have different wavelength bins?
             template_different_spectrum (bool):
                                 Is this TF going to share all specified bins but
-                                be taken on photons from a different observer
+                                be taken on photons from a different observer.
+
+        Todo:
+            Consider making it impossible to apply filters after calling run().
         """
         assert (delay_bins is not None and wave_bins is not None) or template is not None,\
             "Must provide either resolutions or another TF to copy them from!"
@@ -761,8 +646,8 @@ class TransferFunction:
             # and we need to copy the velocities (but bins are in km! not m!)
             else:
                 range_wave = [
-                    doppler_shift_wave(self._line_wave, self._bins_vel[0]*1000),
-                    doppler_shift_wave(self._line_wave, self._bins_vel[-1]*1000)
+                    doppler_shift_wave(self._line_wave, self._bins_vel[0] * 1000),
+                    doppler_shift_wave(self._line_wave, self._bins_vel[-1] * 1000)
                 ]
                 print(
                     "Creating new wavelength bins from template, velocities from {:.2e}-{:.2e} to waves: {:.2f}-{:.2f}"
@@ -778,7 +663,7 @@ class TransferFunction:
             range_wave = [self._bins_wave[0], self._bins_wave[-1]]
             self._bins_vel = np.linspace(doppler_shift_vel(self._line_wave, range_wave[1]),
                                          doppler_shift_vel(self._line_wave, range_wave[0]),
-                                         self._bins_wave_count+1, endpoint=True, dtype=np.float64)
+                                         self._bins_wave_count + 1, endpoint=True, dtype=np.float64)
             # Convert speed from m/s to km/s
             self._bins_vel = np.true_divide(self._bins_vel, 1000.0)
 
@@ -807,10 +692,10 @@ class TransferFunction:
         Internal function used by response(), emissivity() and count()
 
         Args:
-            array (numpy array):    Array to return value from
-            delay (float):          Delay to return value for. None if not required, may be 0!
-            delay_index (int):      Delay index to return value for. None if not required, may be 0!
-            wave (float):           Wavelength to return value for
+            array (np.ndarray):    Array to return value from
+            delay (Optional[float]):          Delay to return value for. Must provide this or delay_index.
+            delay_index (Optional[int]):      Delay index to return value for. Must provide this or delay.
+            wave (Optional[float]):           Wavelength to return value for
 
         Returns:
             Union[np.ndarray, float]: Either a subset of the array if only delay is provided,
@@ -839,36 +724,108 @@ class TransferFunction:
 
         return array[delay_index, np.searchsorted(self._bins_wave, wave)]
 
-    def response_total(self):
-        """Returns the total response"""
+    def response_total(self) -> float:
+        """
+        Returns the total response.
+
+        Returns:
+            float: Total response.
+        """
         return np.sum(self._response)
 
-    def delay_bins(self):
-        """Returns the range of delays covered by this TF"""
+    def delay_bins(self) -> np.ndarray:
+        """
+        Returns the range of delays covered by this TF.
+
+        Returns:
+            np.ndarray: Array of the bin boundaries.
+        """
         return self._bins_delay
 
-    def response(self, delay=None, wave=None, delay_index=None):
-        """Returns the response in this bin"""
+    def response(
+        self, delay: Optional[float] = None, wave: Optional[float] = None, delay_index: Optional[int] = None
+    ) -> Union[float, np.ndarray]:
+        """
+        Returns the responsivity in either one specific wavelength/delay bin, or all wavelength bins
+        for a given delay.
+
+        Args:
+            delay (Optional[float]):          Delay to return value for. Must provide this or delay_index.
+            delay_index (Optional[int]):      Delay index to return value for. Must provide this or delay.
+            wave (Optional[float]):           Wavelength to return value for.
+
+        Returns:
+            Union[int, np.ndarray]: Either the responsivity in one specific bin, or if wave is not specified
+                the counts in each wavelength bin at this delay
+
+        Todo:
+            Allow for only wavelength to be provided?
+        """
         assert self._response is not None,\
             "No response map has been built!"
         return self._return_array(self._response, delay=delay, wave=wave, delay_index=delay_index)
 
-    def emissivity(self, delay=None, wave=None, delay_index=None):
-        """Returns the emissivity in this bin"""
+    def emissivity(
+        self, delay: Optional[float] = None, wave: Optional[float] = None, delay_index: Optional[int] = None
+    ) -> Union[float, np.ndarray]:
+        """
+        Returns the emissivity in either one specific wavelength/delay bin, or all wavelength bins
+        for a given delay.
+
+        Args:
+            delay (Optional[float]):          Delay to return value for. Must provide this or delay_index.
+            delay_index (Optional[int]):      Delay index to return value for. Must provide this or delay.
+            wave (Optional[float]):           Wavelength to return value for.
+
+        Returns:
+            Union[int, np.ndarray]: Either the emissivity in one specific bin, or if wave is not specified
+                the counts in each wavelengthin bin at this delay
+
+        Todo:
+            Allow for only wavelength to be provided?
+        """
         assert self._emissivity is not None,\
             "The TF has not been run! Use .run() to query the DB first."
         return self._return_array(self._emissivity, delay=delay, wave=wave, delay_index=delay_index)
 
-    def count(self, delay=None, wave=None, delay_index=None):
-        """Returns the photon count in this bin"""
+    def count(
+            self, delay: Optional[float] = None, wave: Optional[float] = None, delay_index: Optional[int] = None
+    ) -> Union[int, np.ndarray]:
+        """
+        Returns the photon count in either one specific wavelength/delay bin, or all wavelength bins
+        for a given delay.
+
+        Args:
+            delay (Optional[float]):          Delay to return value for. Must provide this or delay_index.
+            delay_index (Optional[int]):      Delay index to return value for. Must provide this or delay.
+            wave (Optional[float]):           Wavelength to return value for
+
+        Returns:
+            Union[int, np.ndarray]: Either the count in one specific bin, or if wave is not specified
+                the counts in each wavelength bin at this delay
+
+        Todo:
+            Allow for only wavelength to be provided?
+        """
         assert self._count is not None,\
             "The TF has not been run! Use .run() to query the DB first."
         assert delay_index is not None or delay is not None,\
             "You must provide a delay, or a delay index!"
         return self._return_array(self._count, delay=delay, wave=wave, delay_index=delay_index)
 
-    def transfer_function_1d(self, response=False, days=True):
-        """Returns a 1d transfer  function"""
+    def transfer_function_1d(self, response: bool = False, days: bool = True) -> np.ndarray:
+        """
+        Collapses the 2-d transfer/response function into a 1-d response function, and returns
+        the bin midpoints and values in each bin for plotting.
+
+        Args:
+            response (bool): Whether or not to return the response function data
+            days (bool): Whether the bin midpoints should be in seconds or days
+
+        Returns:
+            np.ndarray: A [bins, 2]-d array containing the midpoints of the delay bins,
+                and the value of the 1-d transfer or response function in each bin.
+        """
         if response:
             if days:
                 return np.column_stack(
@@ -889,22 +846,45 @@ class TransferFunction:
         self, log=False, normalised=False, rescaled=False, velocity=False, name=None, days=True,
         response_map=False, keplerian=None, dynamic_range=None, rms=False, show=False,
         max_delay=None
-    ):
+    ) -> 'TransferFunction':
         """
         Takes the data gathered by calling 'run' and outputs a plot
 
         Args:
             log (bool):
+                Whether the plot should be linear or logarithmic.
             normalised (bool):
+                Whether or not to rescale the plot such that the total emissivity = 1.
             rescaled (bool):
-            velocity (bool)
+                Whether or not to rescale the plot such that the maximum emissivity = 1.
+            velocity (bool):
+                Whether the plot X-axis should be velocity (true) or wavelength (false).
             name (Optional[str]):
+                The file will be output to 'tf_filename.eps'. May add the 'name' component
+                to modify it to 'tf_filename_name.eps'. Useful for adding e.g. 'c4' or 'log'.
             days (bool):
+                Whether the plot Y-axis should be in days (true) or seconds (false).
             response_map (bool):
+                Whether to plot the transfer function map or the response function.
             keplerian (Optional[dict]):
+                A dictionary describing the profile of a keplerian disk, the bounds of which will
+                be overlaid on the plot. Arguments include
+                    angle (float) - Angle of disk to the observer,
+                    mass (float) - Mass of the central object in M_sol,
+                    radius (Tuple(float, float)) - Inner and outer disk radii,
+                    include_minimum_velocity - Whether or not to include the outer disk velocity profile
+                        (default no).
             dynamic_range (Optional[int]):
+                If the plot is logarithmic,
+                the dynamic range the colour bar should show. If not provided,
+                will attempt to use the base dynamic range property, otherwise
+                will default to showing 99.9% of all emissivity.
+            max_delay (Optional[float]):
+                The optional maximum delay to plot out to.
             rms (bool):
+                Whether or not the line profile panel should show the root mean squared line profile.
             show (bool):
+                Whether or not to display the plot to screen.
 
         Returns:
             TransferFunction: Self, for chaining outputs
@@ -1116,8 +1096,9 @@ class TransferFunction:
         # Add lines for keplerian rotational outflows
         if keplerian is not None:
             resolution = 1000
-            scale_factor = keplerian.get('rescale', 1)
-            r_angle = np.radians(keplerian["angle"])
+            # Technically radians can output an array if k['angle'] is a list/tuple.
+            # We want the exception to happen on this line if that's so for clarity.
+            r_angle = float(np.radians(keplerian["angle"]))
             r_mass_bh = keplerian["mass"] * apc.M_sun.value
             r_rad_grav = (6 * apc.G.value * r_mass_bh / np.power(apc.c.value, 2))
             ar_wave = np.zeros(resolution)  # * u.angstrom

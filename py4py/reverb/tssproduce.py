@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-import tss_output
-import tss_import
-import tss_process
+import py4py.reverb.timeseries.output as tss_output
+import py4py.reverb.timeseries.input as tss_import
+import py4py.reverb.timeseries.process as tss_process
 
 import astropy as ap
 from astropy import units as u
@@ -117,61 +117,61 @@ print("Importing begins at: {}".format(datetime.datetime.now()))
 
 # Import all data files
 print("Importing spectra...")
-spectrum_qso_line, continuum_fit_qso = tss_import.spectrum(spectrum_file_qso, spectrum_bins_name, spectrum_value_name,
-                            frequency=False,
-                            wave_units=spectrum_wave_units,
-                            wave_name="Å",
-                            value_units=spectrum_value_units,
-                            value_name="erg s$^{-1}$ cm$^{-2}$ at 100 Pc",
-                            limits=spectrum_line_wave_range,
-                            subtract_continuum_with_mask=spectrum_line_subtract_range,
-                            rebin_to=spectrum_line_rebin_to)
-spectrum_qso_full = tss_import.spectrum(spectrum_file_qso, spectrum_bins_name, spectrum_value_name,
-                            frequency=False,
-                            wave_units=spectrum_wave_units,
-                            value_units=spectrum_value_units,
-                            value_name="erg s$^{-1}$ cm$^{-2}$ at 100 Pc",
-                            limits=spectrum_full_wave_range,
-                            rebin_to=spectrum_full_rebin_to)
-spectrum_sey_line, continuum_fit_sey = tss_import.spectrum(spectrum_file_sey, spectrum_bins_name, spectrum_value_name,
-                            frequency=False,
-                            wave_units=spectrum_wave_units,
-                            wave_name="Å",
-                            value_units=spectrum_value_units,
-                            value_name="erg s$^{-1}$ cm$^{-2}$ at 100 Pc",
-                            limits=spectrum_line_wave_range,
-                            subtract_continuum_with_mask=spectrum_line_subtract_range,
-                            rebin_to=spectrum_line_rebin_to)
-spectrum_sey_full = tss_import.spectrum(spectrum_file_sey, spectrum_bins_name, spectrum_value_name,
-                            frequency=False,
-                            wave_units=spectrum_wave_units,
-                            wave_name="Å",
-                            value_units=spectrum_value_units,
-                            value_name="erg s$^{-1}$ cm$^{-2}$ at 100 Pc",
-                            limits=spectrum_full_wave_range,
-                            rebin_to=spectrum_full_rebin_to)
+spectrum_qso_line, continuum_fit_qso = tss_import.read_spectrum(spectrum_file_qso, spectrum_bins_name, spectrum_value_name,
+                                                                frequency=False,
+                                                                wave_units=spectrum_wave_units,
+                                                                wave_name="Å",
+                                                                value_units=spectrum_value_units,
+                                                                value_name="erg s$^{-1}$ cm$^{-2}$ at 100 Pc",
+                                                                limits=spectrum_line_wave_range,
+                                                                subtract_continuum_with_mask=spectrum_line_subtract_range,
+                                                                rebin_to=spectrum_line_rebin_to)
+spectrum_qso_full = tss_import.read_spectrum(spectrum_file_qso, spectrum_bins_name, spectrum_value_name,
+                                             frequency=False,
+                                             wave_units=spectrum_wave_units,
+                                             value_units=spectrum_value_units,
+                                             value_name="erg s$^{-1}$ cm$^{-2}$ at 100 Pc",
+                                             limits=spectrum_full_wave_range,
+                                             rebin_to=spectrum_full_rebin_to)
+spectrum_sey_line, continuum_fit_sey = tss_import.read_spectrum(spectrum_file_sey, spectrum_bins_name, spectrum_value_name,
+                                                                frequency=False,
+                                                                wave_units=spectrum_wave_units,
+                                                                wave_name="Å",
+                                                                value_units=spectrum_value_units,
+                                                                value_name="erg s$^{-1}$ cm$^{-2}$ at 100 Pc",
+                                                                limits=spectrum_line_wave_range,
+                                                                subtract_continuum_with_mask=spectrum_line_subtract_range,
+                                                                rebin_to=spectrum_line_rebin_to)
+spectrum_sey_full = tss_import.read_spectrum(spectrum_file_sey, spectrum_bins_name, spectrum_value_name,
+                                             frequency=False,
+                                             wave_units=spectrum_wave_units,
+                                             wave_name="Å",
+                                             value_units=spectrum_value_units,
+                                             value_name="erg s$^{-1}$ cm$^{-2}$ at 100 Pc",
+                                             limits=spectrum_full_wave_range,
+                                             rebin_to=spectrum_full_rebin_to)
 
 
 print("Importing lightcurve file '{}'...".format(lightcurve_file))
-lightcurve_qso = tss_import.lightcurve(lightcurve_file,
-                                       time_units=lightcurve_time_units,
-                                       value_units=lightcurve_value_units,
-                                       time_name="MJD",
-                                       value_name="erg s$^{-1}$",
-                                       target_bolometric_luminosity=lightcurve_target_lum_qso,
-                                       delta_continuum_range=delta_continuum_range)
-lightcurve_sey = tss_import.lightcurve(lightcurve_file,
-                                       time_units=lightcurve_time_units,
-                                       value_units=lightcurve_value_units,
-                                       time_name="MJD",
-                                       value_name="erg s$^{-1}$",
-                                       target_bolometric_luminosity=lightcurve_target_lum_sey,
-                                       delta_continuum_range=delta_continuum_range)
+lightcurve_qso = tss_import.read_lightcurve(lightcurve_file,
+                                            time_units=lightcurve_time_units,
+                                            value_units=lightcurve_value_units,
+                                            time_name="MJD",
+                                            value_name="erg s$^{-1}$",
+                                            target_bolometric_luminosity=lightcurve_target_lum_qso,
+                                            delta_continuum_range=delta_continuum_range)
+lightcurve_sey = tss_import.read_lightcurve(lightcurve_file,
+                                            time_units=lightcurve_time_units,
+                                            value_units=lightcurve_value_units,
+                                            time_name="MJD",
+                                            value_name="erg s$^{-1}$",
+                                            target_bolometric_luminosity=lightcurve_target_lum_sey,
+                                            delta_continuum_range=delta_continuum_range)
 
 print("Importing spectra timing file '{}'...".format(spectra_times_file))
-spectra_times = tss_import.spectra_times(spectra_times_file,
-                                         time_units=spectra_times_units,
-                                         time_name="MJD")
+spectra_times = tss_import.read_spectra_times(spectra_times_file,
+                                              time_units=spectra_times_units,
+                                              time_name="MJD")
 
 
 # Produce a TF
@@ -325,10 +325,10 @@ else:
     spectra_times_qso.write(output_times_line_file+'_qso.dat', format='ascii', overwrite=True)
 
 if time_series_outputs:
-    tss_output.CARAMEL(lightcurve_qso, spectra_qso_line, spectra_times, suffix_qso)
-    tss_output.MEMECHO(lightcurve_qso, spectra_qso_full, spectra_times, suffix_qso)
-    tss_output.CARAMEL(lightcurve_sey, spectra_sey_line, spectra_times, suffix_sey)
-    tss_output.MEMECHO(lightcurve_sey, spectra_sey_full, spectra_times, suffix_sey)
+    tss_output.write_caramel_data(lightcurve_qso, spectra_qso_line, spectra_times, suffix_qso)
+    tss_output.write_memecho_data(lightcurve_qso, spectra_qso_full, spectra_times, suffix_qso)
+    tss_output.write_caramel_data(lightcurve_sey, spectra_sey_line, spectra_times, suffix_sey)
+    tss_output.write_memecho_data(lightcurve_sey, spectra_sey_full, spectra_times, suffix_sey)
 
 # ==============================================================================
 # OUTPUT VISUALIZATIONS
@@ -363,16 +363,16 @@ if visualise_rescaled_tfs:
                             })
 
 # ------------------------------------------------------------------------------
-# Generate animation
+# Generate write_animation
 # ------------------------------------------------------------------------------
 if visualise_animation:
-    print("Generating animation begins at: {}".format(datetime.datetime.now()))
-    tss_output.animation(spectra_qso_full, lightcurve_qso, spectra_times, times_qso_full, output_animation_file+"_qso_full")
-    tss_output.animation(spectra_qso_line, lightcurve_qso, spectra_times, times_qso_line, output_animation_file+"_qso_line")
-    tss_output.animation(spectra_sey_full, lightcurve_sey, spectra_times, times_sey_full, output_animation_file+"_sey_full")
-    tss_output.animation(spectra_sey_line, lightcurve_sey, spectra_times, times_sey_line, output_animation_file+"_sey_line")
+    print("Generating write_animation begins at: {}".format(datetime.datetime.now()))
+    tss_output.write_animation(spectra_qso_full, lightcurve_qso, spectra_times, times_qso_full, output_animation_file + "_qso_full")
+    tss_output.write_animation(spectra_qso_line, lightcurve_qso, spectra_times, times_qso_line, output_animation_file + "_qso_line")
+    tss_output.write_animation(spectra_sey_full, lightcurve_sey, spectra_times, times_sey_full, output_animation_file + "_sey_full")
+    tss_output.write_animation(spectra_sey_line, lightcurve_sey, spectra_times, times_sey_line, output_animation_file + "_sey_line")
     if visualise_clean:
-        tss_output.animation(spectra_qso_full_clean, lightcurve_qso, spectra_times, times_qso_full, output_animation_file+"_qso_full_clean")
-        tss_output.animation(spectra_qso_line_clean, lightcurve_qso, spectra_times, times_qso_line, output_animation_file+"_qso_line_clean")
-        tss_output.animation(spectra_sey_full_clean, lightcurve_sey, spectra_times, times_sey_full, output_animation_file+"_sey_full_clean")
-        tss_output.animation(spectra_sey_line_clean, lightcurve_sey, spectra_times, times_sey_line, output_animation_file+"_sey_line_clean")
+        tss_output.write_animation(spectra_qso_full_clean, lightcurve_qso, spectra_times, times_qso_full, output_animation_file + "_qso_full_clean")
+        tss_output.write_animation(spectra_qso_line_clean, lightcurve_qso, spectra_times, times_qso_line, output_animation_file + "_qso_line_clean")
+        tss_output.write_animation(spectra_sey_full_clean, lightcurve_sey, spectra_times, times_sey_full, output_animation_file + "_sey_full_clean")
+        tss_output.write_animation(spectra_sey_line_clean, lightcurve_sey, spectra_times, times_sey_line, output_animation_file + "_sey_line_clean")
