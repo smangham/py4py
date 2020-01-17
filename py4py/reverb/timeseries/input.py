@@ -13,10 +13,11 @@ from astropy import units as u
 from astropy.units import cds as ucds
 from astropy.io.ascii.core import InconsistentTableError
 import numpy as np
+from numpy import poly1d
 
 import matplotlib.pyplot as plt
 
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, Union, List
 
 
 def read_spectra_times(filename: str, time_units: Unit = None, time_name: str = 'MJD') -> Table:
@@ -147,7 +148,7 @@ def read_spectrum(
         wave_name: Optional[str] = None, value_name: Optional[str] = None,
         error: Optional[str] = None,
         subtract_continuum_with_mask: Optional[Quantity] = None, rebin_to: Optional[int] = None
-) -> Table:
+) -> Union[Table, (Table, poly1d)]:
     """
     Imports a spectrum, and converts to target wavelength units, rebinning if requested.
 
@@ -172,6 +173,7 @@ def read_spectrum(
         rebin_to (Optional[int]): Whether the spectrum should be rebinned, and if so to how many bins
     Returns:
         Table:  Table of input file. Key columns are 'wave', 'value' and 'error'
+        poly1d: A function describing the background continuum
 
     Todo: A lot of assumptions are made that limits units are the same as bins units, etc.
     Todo: The actual 'units' arguments should be used instead of just assuming...
@@ -280,7 +282,7 @@ def read_spectrum(
         masked_bins = np.ma.masked_inside(bins, subtract_continuum_with_mask[0].value,
                                           subtract_continuum_with_mask[1].value)
         masked_values = np.ma.array(values, mask=np.ma.getmaskarray(masked_bins), copy=True)
-        continuum_fit = np.poly1d(np.ma.polyfit(masked_bins, masked_values, 1))
+        continuum_fit = poly1d(np.ma.polyfit(masked_bins, masked_values, 1))
         spectrum['value'] -= continuum_fit(spectrum['wave'])
 
         spectrum.remove_rows(slice(np.searchsorted(spectrum["wave"], subtract_continuum_with_mask[1]), len(spectrum)+1))

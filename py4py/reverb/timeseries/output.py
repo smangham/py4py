@@ -265,6 +265,8 @@ def write_animation(
         spectra: Table, lightcurve: Table, spectra_times: Table, times: Table, filename: str, is_reversed: bool = False
 ):
     """
+    Given a lightcurve and table containing a time series of spectra,
+    generate an animation that shows how the output spectrum changes over time.
 
     Arguments:
         spectra (Table): Spectra (starting at column 3).
@@ -374,7 +376,9 @@ def write_animation(
             next_column += 1
 
         # Plot the continuum brightness for this step in the appropriate colour
-        point_new = ax_dc.plot(times['time'][step], times['dC'][step], 'o', c=time_colour, zorder=zorder(step, len(times), is_reversed))
+        point_new = ax_dc.plot(
+            times['time'][step], times['dC'][step], 'o', c=time_colour, zorder=zorder(step, len(times), is_reversed)
+        )
         artists.append(point_new)
         return artists,
 
@@ -388,15 +392,19 @@ def rescaled_rfs(
         tfs: List[TransferFunction], rescale_max_time: Quantity, figure_max_time: Quantity, keplerian: dict = None
 ):
     """
-    Outputs RFs for rescaled versions of the input
+    Outputs response functions for rescaled versions of the input.
+    Different mass SMBHs scale straightforwardly; accretion disks are generated at locations with the same
+    doppler shifts, so the only thing you need to do to scale the mass is to rescale the time delays.
 
     Arguments:
-        tfs (List[TransferFunction]):
-        rescale_max_time (Quantity):
+        tfs (List[TransferFunction]): The transfer functions to plot the response functions for.
+        rescale_max_time (Quantity): The new 'maximum time' the TF should extend to.
         figure_max_time (Quantity):
-        keplerian (dict):
+            The maximum time that should be shown on the plot (may be lower than rescale_max_time).
+        keplerian (dict): Dictionary containing Keplerian disk profile as used by plot.
 
     Outputs:
+        {tf.name}_resp.eps
     """
     for tf in tfs:
         delay_bins = (tf.delay_bins() * u.s).to(u.day)
@@ -409,13 +417,19 @@ def rescaled_rfs(
                 keplerian=keplerian)
 
 
-def plot_spectra_rms(spectra: Table, filenames: List[str]):
+def plot_spectra_rms(spectra: List[(Table, Table)], filenames: List[str]):
     """
+    Given a list of timeseries of spectra (full and continuum subtracted), produce a trailed
+    spectrogram of each, plus the RMS spectra.
+
     Arguments:
-        spectra (Table):
-        filenames (List[str]):
+        spectra (List[(Table, Table)]):
+            Pairs of tables containing full and continuum subtracted (in that order) timeseries of spectra
+        filenames (List[str]): Filenems
+            List of filenames for each of the pairs.
 
     Outputs:
+        {filename}.eps for filename in filenames
     """
     for (spec_full, spec_line), filename in zip(spectra, filenames):
         fig, (ax_full, ax_line) = plt.subplots(2, 1, sharex=True)

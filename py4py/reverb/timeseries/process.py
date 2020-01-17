@@ -1,25 +1,26 @@
-import sys
-import tfpy
+"""
+Reverberation Mapping - Timeseries internal processing module
 
-import matplotlib.pyplot as plt
-
+This module is largely internal processing functions.
+"""
+from py4py.reverb import TransferFunction, open_database
 import numpy as np
-import numpy.random as npr
-
+from numpy.random import normal
+from numpy import ndarray, poly1d
 import astropy as ap
 import astropy.constants as apc
-import astropy.table as apt
+from astropy.table import Table
 from astropy import units as u
-from astropy.units import cds as ucds
+from typing import Optional
 
 
-def interpolation_across_range(x, y, x_int):
+def interpolation_across_range(x: ndarray, y: ndarray, x_int: float) -> float:
     """
     Simple linear interpolation function
 
-    Args:
-        x (numpy.float):    X values
-        y (numpy.float):    Y values
+    Arguments:
+        x (ndarray):    X values
+        y (ndarray):    Y values
         x_int (float):           X to find Y for
     Returns:
         float:  Linear interpolation of Y for x_int
@@ -37,49 +38,74 @@ def interpolation_across_range(x, y, x_int):
         return y[x_min_index] + (y_diff * x_int_fraction)
 
 
-def generate_spectrum_bounds(spectrum):
+def generate_spectrum_bounds(spectrum: Table) -> ndarray:
+    """
+    Given a spectrum table with 'wave_min' and 'wave_max' columns,
+    returns the full list of bins.
+
+    Arguments:
+        spectrum(Table): The table in Python output format
+
+    Returns:
+        ndarray; The bounds
+    """
     # Take spectrum and produce full list of wavelength bins for it to feed to the TF
     bounds = list(spectrum["wave_min"])
     bounds.append(spectrum["wave_max"][-1])
     return np.array(bounds)
 
 
-def generate_tf(databases, spectrum, delay_bins, line, wave, name, limit=999999999, dynamic_range=2):
+def generate_tf(databases: dict, spectrum: Table, delay_bins: int,
+                line: int, wave: float, name: str, limit: int = 999999999,
+                dynamic_range: float = 2) -> TransferFunction:
     """
     Generates the response function for a system.
 
     Arguments
-        databases (Dict): Dictionary of 'min', 'mid' and 'max' data, each containing a dictionary
-            with 'path' (to the file), 'continuum' (the continuum used in creation) and 'scale' (number of spectral cycles used)
+        databases (dict): Dictionary of 'min', 'mid' and 'max' data, each containing a dictionary
+            with 'path' (to the file), 'continuum' (the continuum used in creation)
+            and 'scale' (number of spectral cycles used)
         spectrum (Table): Spectrum to template the wavelength bins off of
-        delay_bins (Int): Number of bins to bin delays by
-        line (Int): Python line number to select
-        wave (Float): Frequency of the line selected (in A)
-        name (String): Name of the output files.
-        limit (Int): Number of photons to limit the DB query to. Set low for testing.
+        delay_bins (int): Number of bins to bin delays by
+        line (int): Python line number to select
+        wave (float): Frequency of the line selected (in A)
+        name (str): Name of the output files.
+        limit (int): Number of photons to limit the DB query to. Set low for testing.
 
     Returns:
         TransferFunction: The response-mapped transfer function.
+
+    Outputs:
+        {name}_min.eps: Transfer function plot for minimum
+        {name}.eps: Transfer function plot for midpoint
+        {name}_max.eps: Transfer function plot for maximum
+        {name}_resp.eps: Response function for minimum
     """
-    db_mid = tfpy.open_database(databases['mid']['path'], "root", "password")
-    db_min = tfpy.open_database(databases['min']['path'], "root", "password")
-    db_max = tfpy.open_database(databases['max']['path'], "root", "password")
+    db_mid = open_database(databases['mid']['path'], "root", "password")
+    db_min = open_database(databases['min']['path'], "root", "password")
+    db_max = open_database(databases['max']['path'], "root", "password")
 
     bounds = generate_spectrum_bounds(spectrum)
 
-    tf_mid = tfpy.TransferFunction(db_mid, name, continuum=databases['mid']['continuum'],
-                wave_bins=(len(bounds)-1), delay_bins=delay_bins)
+    tf_mid = TransferFunction(
+        db_mid, name, continuum=databases['mid']['continuum'], wave_bins=(len(bounds)-1), delay_bins=delay_bins
+    )
     tf_mid.line(line, wave).wavelength_bins(bounds).delay_dynamic_range(dynamic_range).run(
-                scaling_factor=databases['mid']['scale'], limit=limit,verbose=True).plot()
-    tf_min = tfpy.TransferFunction(db_min, name+'_min', continuum=databases['min']['continuum'], template=tf_mid).run(
-                scaling_factor=databases['min']['scale'], limit=limit).plot()
-    tf_max = tfpy.TransferFunction(db_max, name+'_max', continuum=databases['max']['continuum'], template=tf_mid).run(
-                scaling_factor=databases['max']['scale'], limit=limit).plot()
+                scaling_factor=databases['mid']['scale'], limit=limit, verbose=True).plot()
+
+    tf_min = TransferFunction(
+        db_min, name+'_min', continuum=databases['min']['continuum'], template=tf_mid
+    ).run(scaling_factor=databases['min']['scale'], limit=limit).plot()
+
+    tf_max = TransferFunction(
+        db_max, name+'_max', continuum=databases['max']['continuum'], template=tf_mid
+    ).run(scaling_factor=databases['max']['scale'], limit=limit).plot()
+
     tf_mid.response_map_by_tf(tf_min, tf_max).plot(response_map=True, name='resp')
     return tf_mid
 
 
-def generate_spectra_base(spectrum, spectra_times):
+def generate_spectra_base(spectrum: Table, spectra_times: Table) -> Table:
     """
     Generates the base spectra for each timestep.
 
@@ -89,7 +115,6 @@ def generate_spectra_base(spectrum, spectra_times):
 
     Returns:
         Table: With one spectrum per target spectra time, keyed by the times
-
     """
     spectra = ap.table.Table([spectrum['wave'], spectrum['value'], spectrum['error']])
     spectra.meta['bounds'] = generate_spectrum_bounds(spectrum)
@@ -106,13 +131,16 @@ def generate_spectra_base(spectrum, spectra_times):
     return spectra
 
 
-def generate_times_and_delta_continuum(transfer_function, lightcurve, delay_max):
+def generate_times_and_delta_continuum(
+        transfer_function: TransferFunction, lightcurve: Table, delay_max: Optional[float] = None
+) -> Table:
     """
     Generates the timesteps to evaluate the TF at and the change in continuum at each
 
     Arguments:
         transfer_function (TransferFunction): The TF
         lightcurve(Table): The lightcurve base used for this.
+        delay_max (float): The maximum delay to generate the delta continuum for
 
     Returns:
         times (np.array): Time domain broken down into small steps
@@ -126,7 +154,9 @@ def generate_times_and_delta_continuum(transfer_function, lightcurve, delay_max)
     bin_width = (delay_bins[1] - delay_bins[0]).value
 
     # We need continuum in terms of delta from the mean
-    times = ap.table.Table([np.arange(lightcurve['time'][0], lightcurve['time'][-1] + bin_width, bin_width)], names=['time'])
+    times = ap.table.Table(
+        [np.arange(lightcurve['time'][0], lightcurve['time'][-1] + bin_width, bin_width)], names=['time']
+    )
     times['time'].unit = lightcurve['time'].unit
     times['C'] = np.zeros(len(times))
     times['C'].unit = lightcurve['value'].unit
@@ -139,16 +169,30 @@ def generate_times_and_delta_continuum(transfer_function, lightcurve, delay_max)
     times.meta['delay_bins'] = delay_bins
 
     for step in range(0, len(times)):
-        # calculate the delta continuum from the 'current value and the starting value, hence the pulse contribution to later timesteps
+        # Calculate the delta continuum from the 'current value and the starting value,
+        # hence the pulse contribution to later timesteps
         times['C'][step] = interpolation_across_range(lightcurve['time'], lightcurve['value'], times['time'][step])
         times['dC'][step] = (times['C'][step] - lightcurve.meta['mean'].value)
         times['dC%'][step] = (times['dC'][step] / lightcurve.meta['mean'].value)
     return times
 
 
-def generate_spectra_min_max(times, transfer_function, spectra, spectrum,
-                             continuum_fit=None):
-    # TODO: Correct this! Unfortunately it's mis-set in the data we sent out
+def generate_spectra_min_max(times: Table, transfer_function: TransferFunction, spectra: Table, spectrum: Table,
+                             continuum_fit: Optional[poly1d] = None):
+    """
+    When passed a timeseries of spectra, finds the outermost extent of the flux envelope (minimum and maximum values),
+    and modifies the timeseries of spectra to add that as columns.
+
+    Arguments:
+        times (Table): The list of times to take spectra and the associated delta continuum for that time
+        transfer_function (TransferFunction): The response function of the system
+        spectra (Table): The base spectrum in Python format
+        spectrum (Table): The time series of spectra
+        continuum_fit(Optional[poly1d]): A function that describes the background continuum as a function of wavelength
+
+    Returns:
+         None
+    """
     delay_bins = transfer_function.delay_bins()
     dC_max = np.amax(times['dC'])
     dC_min = np.amin(times['dC'])
@@ -166,10 +210,8 @@ def generate_spectra_min_max(times, transfer_function, spectra, spectrum,
             # x *= (freq * freq * 1e-8) / (dfreq * dd * C);
             dfreq = spectrum["freq_max"].quantity[j] - spectrum["freq_min"].quantity[j]
             invwave = (spectrum["freq"].quantity[j] / apc.c).to(1/spectrum["wave"].unit)
-            spectra["value_min"][j] += (dC_min * response[j] *
-                invwave * spectrum["freq"][j] / dfreq).value
-            spectra["value_max"][j] += (dC_max * response[j] *
-                invwave * spectrum["freq"][j] / dfreq).value
+            spectra["value_min"][j] += (dC_min * response[j] * invwave * spectrum["freq"][j] / dfreq).value
+            spectra["value_max"][j] += (dC_max * response[j] * invwave * spectrum["freq"][j] / dfreq).value
 
     np.savetxt("pulses_added_maximum.txt", pulses_added)
 
@@ -179,14 +221,30 @@ def generate_spectra_min_max(times, transfer_function, spectra, spectrum,
         for j in range(0, len(spectrum)):
             spectra["value_min"][j] += continuum_fit(spectrum["wave"].quantity[j]) * dC_min
             spectra["value_max"][j] += continuum_fit(spectrum["wave"].quantity[j]) * dC_max
-    return
 
 
-def generate_spectra_details(times, transfer_function, spectra, spectrum,
-                             continuum_fit=None,
-                             calculate_error=False,
-                             error_over_variation=0.01,
-                             verbose=True):
+def generate_spectra_details(times: Table, transfer_function: TransferFunction, spectra: Table, spectrum: Table,
+                             continuum_fit: Optional[poly1d] = None,
+                             calculate_error: Optional[bool] = False,
+                             error_over_variation: Optional[float] = 0.01,
+                             verbose: Optional[bool] = True):
+    """
+    When passed a table with a
+
+    Arguments:
+        times (Table): A table containing the timesteps the time-series should be evaluated over
+        transfer_function (TransferFunction): The TF containing the response function to use
+        spectra (Table): The output table for the finished timeseries
+        spectrum (Table): A table containing the spectrum to use as the base for the time-series
+        continuum_fit (poly1d): If this is a continuuum-subtracted timeseries, the function that describes the continuum
+        calculate_error (Optional[bool]): Whether or not we should calculate the error on the timeseries steps
+        error_over_variation (Optional[float]): If calculating error, what should be the target integrated line error
+            over the line variation range
+        verbose (Optional[bool]): Whether or not to print out info messages
+
+    Returns:
+        None.
+    """
     delay_bins = times.meta['delay_bins']
 
     # Generate prefactors
@@ -236,10 +294,19 @@ def generate_spectra_details(times, transfer_function, spectra, spectrum,
                 # Add the delta continuum to it
                 spectra[column][j] += continuum_fit(spectrum["wave"].quantity[j]) * dC_rel
 
-    return
 
+def generate_times_line_emission(spectra: Table, spectra_times: Table, verbose: bool = False):
+    """
+    Given a finished timeseries of spectra, produce the total line emission at each observation
 
-def generate_times_line_emission(spectra, spectra_times, verbose=False):
+    Arguments:
+        spectra (Table): The time-series of spectra
+        spectra_times (Table): The times at which the spectra are taken (i.e. the fake observations)
+        verbose (bool): Whether or not to report on the total line variation
+
+    Return:
+        Table: A table with the line emission for each timestep
+    """
     line_times = spectra_times.copy(copy_data=True)
     line_times['time'] = line_times['time'].quantity.to(u.s)
     line_times['line'] = np.zeros(len(line_times))
@@ -272,9 +339,20 @@ def generate_times_line_emission(spectra, spectra_times, verbose=False):
     return line_times
 
 
-def generate_spectra_error(spectra,
-                           error=0.01,
-                           fudge_factor=1.0):
+def generate_spectra_error(spectra: Table,
+                           error: float = 0.01,
+                           fudge_factor: float = 1.0):
+    """
+    # TODO: Fill in
+
+    Arguments:
+        spectra (Table):
+        error (float):
+        fudge_factor (float):
+
+    Returns:
+        A copy of the spectra table with errors applied
+    """
     # We want integrated flux error / continuum variation <= error
     # err_L / var_L = error
     rhs = error
@@ -300,7 +378,20 @@ def generate_spectra_error(spectra,
     return apply_spectra_error(spectra)
 
 
-def copy_spectra_error(origin, target, rescale=False):
+def copy_spectra_error(origin: Table, target: Table, rescale: bool = False):
+    """
+    Spectra error are calculated from minimum to maximum line variation.
+    This doesn't really work well in situations where the variation is low due to a mixed positive-negative
+    response function. So we instead copy across the errors from another timeseries, rescaling if necessary.
+
+    Arguments:
+        origin (Table): The timeseries of spectra with errors
+        target (Table): The timeseries of spectra that we want to copy the errors to
+        rescale (bool):
+
+    Return:
+         Copy of the 'target' timeseries with errors applied
+    """
     # Copy across errors and apply them
     if not rescale:
         target['error'] = origin['error'][0]
@@ -314,7 +405,17 @@ def copy_spectra_error(origin, target, rescale=False):
     return apply_spectra_error(target)
 
 
-def apply_spectra_error(spectra):
+def apply_spectra_error(spectra: Table):
+    """
+    Given a timeseries of spectra with an 'error' column, creates a copy and
+    applies random normally-distributed errors to the values at each timestep.
+
+    Arguments:
+        spectra (Table):
+
+    Returns:
+        Table: A copy of the input spectra with the errors applied
+    """
     # Now we have the final spectra, create clean copies then add the experimental errors
     clean_copy = spectra.copy(copy_data=True)
 
@@ -323,5 +424,5 @@ def apply_spectra_error(spectra):
         if 'value' in column:
             for j in range(0, len(spectra)):
                 # For each wavelength bin in each spectrum, add a random error
-                spectra[column][j] += npr.normal(scale=spectra['error'][j])
+                spectra[column][j] += normal(scale=spectra['error'][j])
     return clean_copy
