@@ -843,11 +843,12 @@ class TransferFunction:
             return np.column_stack((calculate_midpoints(self._bins_delay), np.sum(self._emissivity, 1)))
 
     def plot(
-        self, log=False, normalised=False, rescaled=False, velocity=False, name=None, days=True,
-        response_map=False, keplerian=None, dynamic_range=None, rms=False, show=False,
-        max_delay=None
+            self, log: bool = False, normalised: bool = False, rescaled: bool = False, velocity: bool = False,
+            name: str = None, days: bool = True, response_map=False, keplerian: dict = None,
+            dynamic_range: int = None, rms: bool = False, show: bool = False,
+            max_delay: Optional[float] = None, format: str = '.eps'
     ) -> 'TransferFunction':
-        """
+        """r
         Takes the data gathered by calling 'run' and outputs a plot
 
         Args:
@@ -885,6 +886,8 @@ class TransferFunction:
                 Whether or not the line profile panel should show the root mean squared line profile.
             show (bool):
                 Whether or not to display the plot to screen.
+            format (str):
+                The output file format. .eps by default.
 
         Returns:
             TransferFunction: Self, for chaining outputs
@@ -1167,10 +1170,10 @@ class TransferFunction:
         cbar.set_label(cb_label+cb_label_vars+cb_label_scale+cb_label_units)
 
         if name is None:
-            plt.savefig("{}.eps".format(self._filename), bbox_inches='tight')
+            plt.savefig("{}.{}".format(self._filename, format), bbox_inches='tight')
             print("Successfully plotted '{}.eps'({:.1f}s)".format(self._filename, time.clock()-start))
         else:
-            plt.savefig("{}_{}.eps".format(self._filename, name), bbox_inches='tight')
+            plt.savefig("{}_{}.{}".format(self._filename, name, format), bbox_inches='tight')
             print("Successfully plotted '{}_{}.eps'({:.1f}s)".format(self._filename, name, time.clock()-start))
 
         if show:
@@ -1237,17 +1240,17 @@ def open_database(file_root: str, user: str = None, password: str = None, batch_
                 print("Malformed line: '{}'".format(line))
                 continue
 
-            if len(values) is not 13:
+            if len(values) is not 12:
                 # There should be 13 values per line in our base formatting!
-                print("Malformed line: '{}'".format(line))
+                print("Incorrect number of values in line: '{}'".format(line))
                 continue
 
             # Add the photo using the values. Some must be modified here; ideally, this would be done in Python.
             session.add(Photon(Wavelength=values[1], Weight=values[2], X=values[3], Y=values[4], Z=values[5],
                                ContinuumScatters=int(values[6]-values[7]), ResonantScatters=int(values[7]),
                                Delay=values[8],
-                               Spectrum=int(values[10]), Origin=int(values[11] % 10), Resonance=int(values[12]),
-                               Origin_matom=(values[11] > 9)))
+                               Spectrum=int(values[9]), Origin=int(values[10] % 10), Resonance=int(values[11]),
+                               Origin_matom=(values[10] > 9)))
             added += 1
             if added > batch_size:
                 # We commit in batches in order to avoid out-of-memory errors
