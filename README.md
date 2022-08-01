@@ -12,6 +12,10 @@ Submodules
 
 ### reverb
 
-
+This module handles the production of transfer functions
+from the output data from **Python** simulation runs.
 
 #### timeseries
+
+This module handles producing artificial time series in *CARAMEL* and *MEMEcho*
+format, to test deconvolution processes.

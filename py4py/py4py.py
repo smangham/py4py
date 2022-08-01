@@ -1,3 +1,6 @@
+"""
+Functions designed for plotting output files
+"""
 import os
 import sys
 import numpy as np
@@ -7,7 +10,7 @@ import matplotlib.colors as colors
 from astropy.table import Table
 
 
-def plot_spec(col, spectra, names, logX=False, logY=False, scale_to=None, limX=False):
+def plot_spec(col, spectra, names, log_x=False, log_y=False, scale_to=None, lim_x=False):
     """
     Plots an array of python spectra imported as Tables.
 
@@ -33,25 +36,25 @@ def plot_spec(col, spectra, names, logX=False, logY=False, scale_to=None, limX=F
             index_scale = np.searchsorted(spectrum['Lambda'][::-1], scale_to)
             scale_factor = spectrum[col][::-1][index_scale]
 
-        if limX:
-            minY_curr = np.amin(spectrum[col][(spectrum['Lambda']>limX[0]) & (spectrum['Lambda']<limX[1])])/scale_factor
+        if lim_x:
+            minY_curr = np.amin(spectrum[col][(spectrum['Lambda'] > lim_x[0]) & (spectrum['Lambda'] < lim_x[1])]) / scale_factor
             if minY_curr < minY:
                 minY = minY_curr
-            maxY_curr = np.amax(spectrum[col][(spectrum['Lambda']>limX[0]) & (spectrum['Lambda']<limX[1])])/scale_factor
+            maxY_curr = np.amax(spectrum[col][(spectrum['Lambda'] > lim_x[0]) & (spectrum['Lambda'] < lim_x[1])]) / scale_factor
             if maxY_curr > maxY:
                 maxY = maxY_curr
 
-        if logX and logY:
+        if log_x and log_y:
             ax.loglog(spectrum['Lambda'], spectrum[col]/scale_factor, label=name)
-        elif logY:
+        elif log_y:
             ax.semilogy(spectrum['Lambda'], spectrum[col]/scale_factor, label=name)
-        elif logX:
+        elif log_x:
             ax.semilogx(spectrum['Lambda'], spectrum[col]/scale_factor, label=name)
         else:
             ax.plot(spectrum['Lambda'], spectrum[col]/scale_factor, label=name)
 
-    if limX:
-        ax.set_xlim(limX[0], limX[1])
+    if lim_x:
+        ax.set_xlim(lim_x[0], lim_x[1])
         ax.set_ylim(minY, maxY)
 
     ax.legend()

@@ -4,7 +4,7 @@ with open("README.md", "r") as fh:
     long_description = fh.read()
 
 setuptools.setup(
-    name="py4py", # Replace with your own username
+    name="py4py",
     version="0.0.1",
     author="Python Collaboration",
     author_email="s.w.mangham@soton.ac.uk",
